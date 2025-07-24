@@ -1,0 +1,1155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic Hierarchical Repository Graph - Cytoscape.js</title>
+    <script src="https://unpkg.com/cytoscape@3.26.0/dist/cytoscape.min.js"></script>
+    <script src="https://unpkg.com/cytoscape-cose-bilkent@4.1.0/cytoscape-cose-bilkent.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1600px;
+            margin: 0 auto;
+            background: rgba(255, 255, 255, 0.95);
+            backdrop-filter: blur(10px);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+            overflow: hidden;
+        }
+
+        .header {
+            background: linear-gradient(135deg, #4facfe 0%, #00f2fe 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            font-weight: 700;
+            margin-bottom: 10px;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .data-loader {
+            padding: 30px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #dee2e6;
+        }
+
+        .loader-title {
+            font-size: 1.3rem;
+            font-weight: 600;
+            margin-bottom: 20px;
+            text-align: center;
+            color: #333;
+        }
+
+        .loader-options {
+            display: flex;
+            justify-content: center;
+            margin-bottom: 20px;
+        }
+
+        .loader-section {
+            background: white;
+            padding: 25px;
+            border-radius: 15px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+        }
+
+        .loader-section h3 {
+            margin-bottom: 15px;
+            color: #667eea;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .file-input-wrapper {
+            position: relative;
+            display: inline-block;
+            width: 100%;
+        }
+
+        .file-input {
+            width: 100%;
+            padding: 12px;
+            border: 2px dashed #667eea;
+            border-radius: 10px;
+            background: #f8f9fa;
+            cursor: pointer;
+            text-align: center;
+            transition: all 0.3s ease;
+        }
+
+        .file-input:hover {
+            border-color: #4facfe;
+            background: #e3f2fd;
+        }
+
+        .file-input input[type="file"] {
+            position: absolute;
+            left: -9999px;
+        }
+
+
+        .controls {
+            padding: 25px;
+            background: #f8f9fa;
+            border-bottom: 1px solid #dee2e6;
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 25px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 14px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 25px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn-toggle {
+            background: #f8f9fa;
+            color: #495057;
+            border: 2px solid #dee2e6;
+        }
+
+        .btn-toggle.active {
+            background: #28a745;
+            color: white;
+            border-color: #28a745;
+        }
+
+        .btn-toggle:hover {
+            transform: translateY(-1px);
+        }
+
+        .organization-info {
+            padding: 20px 30px;
+            background: linear-gradient(135deg, #e3f2fd 0%, #f3e5f5 100%);
+            border-bottom: 1px solid #dee2e6;
+            text-align: center;
+            display: none;
+        }
+
+        .org-name {
+            font-size: 1.5rem;
+            font-weight: 700;
+            color: #1976d2;
+            margin-bottom: 5px;
+        }
+
+        .org-details {
+            color: #666;
+            font-size: 14px;
+        }
+
+        #cy {
+            width: 100%;
+            height: 700px;
+            background: #fafbfc;
+            display: none;
+        }
+
+        .legend {
+            padding: 25px;
+            background: white;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 20px;
+            display: none;
+        }
+
+        .legend-section {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 15px;
+            border-left: 4px solid #667eea;
+        }
+
+        .legend-title {
+            font-weight: 700;
+            font-size: 1.1rem;
+            margin-bottom: 15px;
+            color: #333;
+        }
+
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 10px;
+        }
+
+        .legend-color {
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            border: 2px solid white;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+
+        .legend-shape {
+            width: 20px;
+            height: 20px;
+            border: 2px solid white;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+
+        .legend-square {
+            border-radius: 3px;
+        }
+
+        .legend-circle {
+            border-radius: 50%;
+        }
+
+        .stats {
+            padding: 25px;
+            background: #e9ecef;
+            text-align: center;
+            display: none;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .stat-item {
+            background: white;
+            padding: 20px;
+            border-radius: 15px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .stat-number {
+            font-size: 2rem;
+            font-weight: 700;
+            color: #667eea;
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            color: #6c757d;
+            font-weight: 500;
+        }
+
+        .loading {
+            text-align: center;
+            padding: 50px;
+            font-size: 18px;
+            color: #6c757d;
+            display: none;
+        }
+
+        .error {
+            background: #f8d7da;
+            color: #721c24;
+            padding: 20px;
+            margin: 20px;
+            border-radius: 10px;
+            border: 1px solid #f5c6cb;
+            display: none;
+        }
+
+        .tooltip {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 15px;
+            border-radius: 10px;
+            pointer-events: none;
+            font-size: 13px;
+            max-width: 350px;
+            z-index: 1000;
+            box-shadow: 0 5px 20px rgba(0,0,0,0.3);
+            display: none;
+        }
+
+        .layout-selector {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .layout-selector select {
+            padding: 8px 15px;
+            border: 2px solid #dee2e6;
+            border-radius: 20px;
+            background: white;
+            font-size: 14px;
+            cursor: pointer;
+        }
+
+        .welcome-screen {
+            text-align: center;
+            padding: 100px 50px;
+            color: #666;
+        }
+
+        .welcome-screen h2 {
+            font-size: 2rem;
+            margin-bottom: 20px;
+            color: #333;
+        }
+
+        .welcome-screen p {
+            font-size: 1.1rem;
+            margin-bottom: 30px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🌳 Dynamic Hierarchical Repository Graph</h1>
+            <p>Load any GitHub organization analysis JSON to visualize the network</p>
+        </div>
+
+        <div class="data-loader">
+            <div class="loader-title">📂 Upload Your JSON Analysis File</div>
+            <div class="loader-options">
+                <div class="loader-section" style="max-width: 600px; margin: 0 auto;">
+                    <h3>📁 Select GitHub Organization Analysis JSON</h3>
+                    <div class="file-input-wrapper">
+                        <div class="file-input" onclick="document.getElementById('fileInput').click()">
+                            <input type="file" id="fileInput" accept=".json" onchange="handleFileUpload(event)">
+                            <span id="fileInputLabel">Click to select JSON file or drag & drop here</span>
+                        </div>
+                    </div>
+                    <div style="text-align: center; margin-top: 15px;">
+                        <button class="btn btn-primary" onclick="refreshLatestAnalysis()" style="font-size: 14px; padding: 8px 16px;">
+                            🔄 Refresh Latest Analysis
+                        </button>
+                    </div>
+                    <p style="margin-top: 15px; color: #666; text-align: center; font-size: 14px;">
+                        Expected format: JSON file with organization analysis data (analysis_*.json)
+                    </p>
+                </div>
+            </div>
+        </div>
+
+        <div class="organization-info" id="orgInfo">
+            <div class="org-name" id="orgName"></div>
+            <div class="org-details" id="orgDetails"></div>
+        </div>
+
+        <div class="controls" id="controls" style="display: none;">
+            <button class="btn btn-primary" onclick="resetView()">🔄 Reset View</button>
+            <button class="btn btn-toggle" id="personalBtn" onclick="togglePersonalRepos()">👤 Toggle Personal Repos</button>
+            <button class="btn btn-toggle" id="orgBtn" onclick="toggleOrgConnections()">🏢 Toggle Org Connections</button>
+            <button class="btn btn-primary" onclick="fitGraph()">📐 Fit All</button>
+            
+            <div class="layout-selector">
+                <label for="layoutSelect">Layout:</label>
+                <select id="layoutSelect" onchange="changeLayout()">
+                    <option value="concentric">Concentric</option>
+                    <option value="cose-bilkent">Hierarchical</option>
+                    <option value="breadthfirst">Breadth First</option>
+                    <option value="circle">Circle</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="welcome-screen" id="welcomeScreen">
+            <h2>Welcome to the Repository Network Visualizer</h2>
+            <p id="welcomeMessage">Checking for latest analysis...</p>
+            <p><strong>Auto-loading:</strong> Automatically loads latest_analysis.json if available</p>
+            <p><strong>Manual upload:</strong> Upload your GitHub organization analysis JSON file</p>
+            <p style="margin-top: 20px; color: #999; font-size: 0.9rem;">
+                📋 Expected format: organization_name, maintainers (with analyzed_repositories, personal_repositories, organization_repositories)
+            </p>
+        </div>
+
+        <div id="loading" class="loading">
+            <p>🔄 Building hierarchical network...</p>
+        </div>
+
+        <div id="error" class="error"></div>
+
+        <div id="cy"></div>
+
+        <div class="legend" id="legend">
+            <div class="legend-section">
+                <div class="legend-title">📍 Node Types</div>
+                <div class="legend-item">
+                    <div class="legend-shape legend-circle" style="background: #e74c3c;"></div>
+                    <div>
+                        <strong>Analyzed Repositories (Level 1)</strong><br>
+                        <small>Center nodes - original org repos under analysis</small>
+                    </div>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-shape legend-square" style="background: #3498db;"></div>
+                    <div>
+                        <strong>Maintainers (Level 2)</strong><br>
+                        <small>Contributors linked to analyzed repos</small>
+                    </div>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-shape legend-circle" style="background: #9b59b6;"></div>
+                    <div>
+                        <strong>Personal Repositories (Level 3)</strong><br>
+                        <small>Personal projects of maintainers</small>
+                    </div>
+                </div>
+                <div class="legend-item">
+                    <div class="legend-shape legend-circle" style="background: #27ae60;"></div>
+                    <div>
+                        <strong>Organization Connections (Level 3)</strong><br>
+                        <small>Other organization repositories</small>
+                    </div>
+                </div>
+            </div>
+
+            <div class="legend-section">
+                <div class="legend-title">🔗 Edge Types</div>
+                <div class="legend-item">
+                    <div style="width: 30px; height: 4px; background: #2c3e50; border-radius: 2px;"></div>
+                    <div>
+                        <strong>Analyzed Connection</strong><br>
+                        <small>Maintainer ↔ Analyzed Repository</small>
+                    </div>
+                </div>
+                <div class="legend-item">
+                    <div style="width: 30px; height: 2px; background: #9b59b6; border-radius: 1px;"></div>
+                    <div>
+                        <strong>Personal Connection</strong><br>
+                        <small>Maintainer ↔ Personal Repository</small>
+                    </div>
+                </div>
+                <div class="legend-item">
+                    <div style="width: 30px; height: 2px; background: #27ae60; border-radius: 1px; border-top: 2px dashed #27ae60;"></div>
+                    <div>
+                        <strong>Organization Connection</strong><br>
+                        <small>Maintainer ↔ Organization Repository</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="stats" id="stats"></div>
+    </div>
+
+    <div class="tooltip" id="tooltip"></div>
+
+    <script>
+        let cy;
+        let currentData = null;
+        let showPersonalRepos = true;
+        let showOrgConnections = true;
+        let currentLayout = 'concentric';
+
+        // File upload handler
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    const jsonData = JSON.parse(e.target.result);
+                    validateAndLoadData(jsonData);
+                    document.getElementById('fileInputLabel').textContent = `✓ ${file.name} loaded`;
+                } catch (error) {
+                    showError(`Invalid JSON file: ${error.message}`);
+                }
+            };
+            reader.readAsText(file);
+        }
+
+
+        // Validate and load data
+        function validateAndLoadData(data) {
+            showLoading();
+            
+            // Validate data structure
+            if (!data.organization_name || !data.maintainers || !Array.isArray(data.maintainers)) {
+                hideLoading();
+                showError('Invalid data structure. Expected JSON with organization_name and maintainers array.');
+                return;
+            }
+
+            // Validate maintainers structure
+            for (let maintainer of data.maintainers) {
+                if (!maintainer.username || !maintainer.analyzed_repositories || !Array.isArray(maintainer.analyzed_repositories)) {
+                    hideLoading();
+                    showError('Invalid maintainer structure. Each maintainer must have username and analyzed_repositories array.');
+                    return;
+                }
+            }
+
+            currentData = data;
+            hideError();
+            displayOrganizationInfo(data);
+            initializeCytoscape(data);
+            showGraphInterface();
+            hideLoading();
+        }
+
+        // Display organization info
+        function displayOrganizationInfo(data) {
+            document.getElementById('orgName').textContent = data.organization_name;
+            document.getElementById('orgDetails').textContent = 
+                `${data.total_maintainers || data.maintainers.length} maintainers • ` +
+                `${data.total_contributors || 'Unknown'} contributors • ` +
+                `Analysis: ${data.analysis_date ? new Date(data.analysis_date).toLocaleDateString() : 'Unknown'}`;
+            document.getElementById('orgInfo').style.display = 'block';
+        }
+
+        // Show/hide interface elements
+        function showGraphInterface() {
+            document.getElementById('welcomeScreen').style.display = 'none';
+            document.getElementById('controls').style.display = 'flex';
+            document.getElementById('cy').style.display = 'block';
+            document.getElementById('legend').style.display = 'grid';
+            document.getElementById('stats').style.display = 'block';
+        }
+
+        function showLoading() {
+            document.getElementById('loading').style.display = 'block';
+        }
+
+        function hideLoading() {
+            document.getElementById('loading').style.display = 'none';
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+        }
+
+        function hideError() {
+            document.getElementById('error').style.display = 'none';
+        }
+
+        // Convert JSON data to Cytoscape elements
+        function convertToCytoscapeElements(data) {
+            const elements = [];
+            const nodeIds = new Set();
+
+            // Level 1: Analyzed Repositories (Center)
+            const analyzedRepos = new Set();
+            data.maintainers.forEach(maintainer => {
+                if (maintainer.analyzed_repositories) {
+                    maintainer.analyzed_repositories.forEach(repo => {
+                        analyzedRepos.add(repo);
+                    });
+                }
+            });
+
+            analyzedRepos.forEach(repo => {
+                const repoName = repo.split('/')[1] || repo;
+                const totalCommits = data.maintainers.reduce((sum, m) => 
+                    sum + (m.analyzed_repositories && m.analyzed_repositories.includes(repo) ? (m.commits || 0) : 0), 0);
+                
+                elements.push({
+                    data: {
+                        id: repo,
+                        label: repoName,
+                        fullName: repo,
+                        type: 'analyzed-repo',
+                        level: 1,
+                        size: Math.max(30, Math.min(60, 30 + totalCommits / 25)),
+                        commits: totalCommits
+                    }
+                });
+                nodeIds.add(repo);
+            });
+
+            // Level 2: Maintainers
+            data.maintainers.forEach(maintainer => {
+                const maintainerId = `maintainer-${maintainer.username}`;
+                
+                elements.push({
+                    data: {
+                        id: maintainerId,
+                        label: maintainer.username,
+                        type: 'maintainer',
+                        level: 2,
+                        size: Math.max(25, Math.min(45, 25 + (maintainer.commits || 0) / 20)),
+                        commits: maintainer.commits || 0,
+                        emails: (maintainer.emails || []).join(', '),
+                        hasCompanyEmail: maintainer.has_company_email || false,
+                        maintainerReasons: (maintainer.maintainer_reasons || []).join(', ')
+                    }
+                });
+                nodeIds.add(maintainerId);
+
+                // Edges: Maintainer to Analyzed Repositories
+                if (maintainer.analyzed_repositories) {
+                    maintainer.analyzed_repositories.forEach(repo => {
+                        elements.push({
+                            data: {
+                                id: `${maintainerId}-${repo}`,
+                                source: maintainerId,
+                                target: repo,
+                                type: 'analyzed-connection',
+                                weight: 3
+                            }
+                        });
+                    });
+                }
+
+                // Level 3: Personal Repositories
+                if (showPersonalRepos && maintainer.personal_repositories) {
+                    maintainer.personal_repositories.slice(0, 10).forEach(repo => {
+                        const personalId = `personal-${repo}`;
+                        const repoName = repo.split('/')[1] || repo;
+                        
+                        if (!nodeIds.has(personalId)) {
+                            elements.push({
+                                data: {
+                                    id: personalId,
+                                    label: repoName,
+                                    fullName: repo,
+                                    type: 'personal-repo',
+                                    level: 3,
+                                    size: 15,
+                                    owner: maintainer.username
+                                }
+                            });
+                            nodeIds.add(personalId);
+                        }
+
+                        elements.push({
+                            data: {
+                                id: `${maintainerId}-${personalId}`,
+                                source: maintainerId,
+                                target: personalId,
+                                type: 'personal-connection',
+                                weight: 1
+                            }
+                        });
+                    });
+                }
+
+                // Level 3: Organization Repositories
+                if (showOrgConnections && maintainer.organization_repositories) {
+                    maintainer.organization_repositories.slice(0, 8).forEach(repo => {
+                        const orgId = `org-${repo}`;
+                        const repoName = repo.split('/')[1] || repo;
+                        
+                        if (!nodeIds.has(orgId)) {
+                            elements.push({
+                                data: {
+                                    id: orgId,
+                                    label: repoName,
+                                    fullName: repo,
+                                    type: 'org-repo',
+                                    level: 3,
+                                    size: 12,
+                                    maintainer: maintainer.username
+                                }
+                            });
+                            nodeIds.add(orgId);
+                        }
+
+                        elements.push({
+                            data: {
+                                id: `${maintainerId}-${orgId}`,
+                                source: maintainerId,
+                                target: orgId,
+                                type: 'org-connection',
+                                weight: 1
+                            }
+                        });
+                    });
+                }
+            });
+
+            return elements;
+        }
+
+        // Get layout options based on layout type
+        function getLayoutOptions(layoutType) {
+            switch (layoutType) {
+                case 'concentric':
+                    return {
+                        name: 'concentric',
+                        concentric: function(node) {
+                            return node.data('level');
+                        },
+                        levelWidth: function() {
+                            return 1;
+                        },
+                        minNodeSpacing: 80,
+                        padding: 50,
+                        startAngle: Math.PI / 6,
+                        sweep: Math.PI * 2,
+                        clockwise: true,
+                        equidistant: false,
+                        animate: true,
+                        animationDuration: 1000
+                    };
+                case 'cose-bilkent':
+                    return {
+                        name: 'cose-bilkent',
+                        nodeRepulsion: 4500,
+                        idealEdgeLength: 100,
+                        edgeElasticity: 0.45,
+                        nestingFactor: 0.1,
+                        gravity: 0.4,
+                        numIter: 2500,
+                        tile: true,
+                        animate: 'end',
+                        animationDuration: 1000
+                    };
+                case 'breadthfirst':
+                    return {
+                        name: 'breadthfirst',
+                        directed: false,
+                        padding: 30,
+                        spacingFactor: 1.75,
+                        animate: true,
+                        animationDuration: 1000
+                    };
+                case 'circle':
+                    return {
+                        name: 'circle',
+                        padding: 50,
+                        animate: true,
+                        animationDuration: 1000
+                    };
+                default:
+                    return { name: 'cose' };
+            }
+        }
+
+        // Initialize Cytoscape
+        function initializeCytoscape(data) {
+            const elements = convertToCytoscapeElements(data);
+
+            if (cy) {
+                cy.destroy();
+            }
+
+            cy = cytoscape({
+                container: document.getElementById('cy'),
+                elements: elements,
+                style: [
+                    // Node styles
+                    {
+                        selector: 'node',
+                        style: {
+                            'label': 'data(label)',
+                            'text-valign': 'center',
+                            'text-halign': 'center',
+                            'font-size': '12px',
+                            'font-weight': 'bold',
+                            'text-outline-width': 2,
+                            'text-outline-color': 'white',
+                            'width': 'data(size)',
+                            'height': 'data(size)',
+                            'border-width': 3,
+                            'border-color': 'white',
+                            'overlay-opacity': 0
+                        }
+                    },
+                    // Analyzed repositories (Level 1) - Circles
+                    {
+                        selector: 'node[type="analyzed-repo"]',
+                        style: {
+                            'background-color': '#e74c3c',
+                            'shape': 'ellipse',
+                            'font-size': '14px',
+                            'z-index': 10
+                        }
+                    },
+                    // Maintainers (Level 2) - Squares
+                    {
+                        selector: 'node[type="maintainer"]',
+                        style: {
+                            'background-color': '#3498db',
+                            'shape': 'round-rectangle',
+                            'font-size': '13px',
+                            'z-index': 8
+                        }
+                    },
+                    // Company email maintainers - darker blue
+                    {
+                        selector: 'node[type="maintainer"][hasCompanyEmail = true]',
+                        style: {
+                            'background-color': '#2980b9'
+                        }
+                    },
+                    // Personal repositories (Level 3) - Circles
+                    {
+                        selector: 'node[type="personal-repo"]',
+                        style: {
+                            'background-color': '#9b59b6',
+                            'shape': 'ellipse',
+                            'font-size': '10px',
+                            'z-index': 5
+                        }
+                    },
+                    // Organization repositories (Level 3) - Circles
+                    {
+                        selector: 'node[type="org-repo"]',
+                        style: {
+                            'background-color': '#27ae60',
+                            'shape': 'ellipse',
+                            'font-size': '9px',
+                            'z-index': 5
+                        }
+                    },
+                    // Edge styles
+                    {
+                        selector: 'edge',
+                        style: {
+                            'curve-style': 'bezier',
+                            'opacity': 0.7,
+                            'z-index': 1
+                        }
+                    },
+                    // Analyzed connections - thick dark lines
+                    {
+                        selector: 'edge[type="analyzed-connection"]',
+                        style: {
+                            'width': 4,
+                            'line-color': '#2c3e50',
+                            'target-arrow-color': '#2c3e50',
+                            'target-arrow-shape': 'triangle',
+                            'arrow-scale': 1.2,
+                            'opacity': 0.8
+                        }
+                    },
+                    // Personal connections - purple lines
+                    {
+                        selector: 'edge[type="personal-connection"]',
+                        style: {
+                            'width': 2,
+                            'line-color': '#9b59b6',
+                            'target-arrow-color': '#9b59b6',
+                            'target-arrow-shape': 'triangle',
+                            'opacity': 0.6
+                        }
+                    },
+                    // Organization connections - green dashed lines
+                    {
+                        selector: 'edge[type="org-connection"]',
+                        style: {
+                            'width': 2,
+                            'line-color': '#27ae60',
+                            'target-arrow-color': '#27ae60',
+                            'target-arrow-shape': 'triangle',
+                            'line-style': 'dashed',
+                            'opacity': 0.6
+                        }
+                    },
+                    // Hover effects
+                    {
+                        selector: 'node:selected',
+                        style: {
+                            'border-width': 5,
+                            'border-color': '#f39c12',
+                            'z-index': 999
+                        }
+                    }
+                ],
+                layout: getLayoutOptions(currentLayout),
+                minZoom: 0.1,
+                maxZoom: 3,
+                wheelSensitivity: 0.2
+            });
+
+            // Add event listeners
+            addEventListeners();
+            updateStats();
+        }
+
+        // Add event listeners
+        function addEventListeners() {
+            const tooltip = document.getElementById('tooltip');
+
+            // Mouse hover events
+            cy.on('mouseover', 'node', function(evt) {
+                const node = evt.target;
+                const data = node.data();
+                let content = '';
+
+                if (data.type === 'maintainer') {
+                    content = `
+                        <strong>👤 ${data.label}</strong><br/>
+                        📊 Commits: ${data.commits}<br/>
+                        ✉️ Emails: ${data.emails || 'N/A'}<br/>
+                        🏢 Company Email: ${data.hasCompanyEmail ? '✓' : '✗'}<br/>
+                        📝 Reasons: ${data.maintainerReasons || 'N/A'}
+                    `;
+                } else {
+                    content = `
+                        <strong>📁 ${data.label}</strong><br/>
+                        🔗 Full Name: ${data.fullName}
+                    `;
+                    if (data.commits) content += `<br/>📊 Total Commits: ${data.commits}`;
+                    if (data.owner) content += `<br/>👤 Owner: ${data.owner}`;
+                    if (data.maintainer) content += `<br/>🔗 Connected via: ${data.maintainer}`;
+                }
+
+                tooltip.innerHTML = content;
+                tooltip.style.display = 'block';
+            });
+
+            cy.on('mousemove', function(evt) {
+                const tooltip = document.getElementById('tooltip');
+                tooltip.style.left = (evt.originalEvent.pageX + 10) + 'px';
+                tooltip.style.top = (evt.originalEvent.pageY - 10) + 'px';
+            });
+
+            cy.on('mouseout', 'node', function() {
+                tooltip.style.display = 'none';
+            });
+
+            // Click events for selection
+            cy.on('tap', 'node', function(evt) {
+                const node = evt.target;
+                cy.elements().removeClass('highlighted');
+                node.addClass('highlighted');
+                
+                // Highlight connected nodes
+                const connectedEdges = node.connectedEdges();
+                const connectedNodes = connectedEdges.connectedNodes();
+                connectedNodes.addClass('highlighted');
+                connectedEdges.addClass('highlighted');
+            });
+        }
+
+        // Control functions
+        function resetView() {
+            if (cy) {
+                cy.fit();
+                cy.center();
+            }
+        }
+
+        function fitGraph() {
+            if (cy) {
+                cy.fit();
+            }
+        }
+
+        function togglePersonalRepos() {
+            showPersonalRepos = !showPersonalRepos;
+            const btn = document.getElementById('personalBtn');
+            btn.classList.toggle('active');
+            btn.textContent = showPersonalRepos ? '👤 Hide Personal Repos' : '👤 Show Personal Repos';
+            if (currentData) {
+                rebuildGraph();
+            }
+        }
+
+        function toggleOrgConnections() {
+            showOrgConnections = !showOrgConnections;
+            const btn = document.getElementById('orgBtn');
+            btn.classList.toggle('active');
+            btn.textContent = showOrgConnections ? '🏢 Hide Org Connections' : '🏢 Show Org Connections';
+            if (currentData) {
+                rebuildGraph();
+            }
+        }
+
+        function changeLayout() {
+            currentLayout = document.getElementById('layoutSelect').value;
+            if (cy) {
+                const layout = cy.layout(getLayoutOptions(currentLayout));
+                layout.run();
+            }
+        }
+
+        function rebuildGraph() {
+            if (currentData && cy) {
+                const elements = convertToCytoscapeElements(currentData);
+                cy.elements().remove();
+                cy.add(elements);
+                const layout = cy.layout(getLayoutOptions(currentLayout));
+                layout.run();
+                updateStats();
+            }
+        }
+
+        function updateStats() {
+            if (!cy) return;
+            
+            const nodes = cy.nodes();
+            const analyzedRepos = nodes.filter('[type="analyzed-repo"]').length;
+            const maintainers = nodes.filter('[type="maintainer"]').length;
+            const personalRepos = nodes.filter('[type="personal-repo"]').length;
+            const orgRepos = nodes.filter('[type="org-repo"]').length;
+
+            document.getElementById('stats').innerHTML = `
+                <h3>📊 Network Statistics</h3>
+                <div class="stats-grid">
+                    <div class="stat-item">
+                        <div class="stat-number">${analyzedRepos}</div>
+                        <div class="stat-label">Analyzed Repositories (Level 1)</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">${maintainers}</div>
+                        <div class="stat-label">Maintainers (Level 2)</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">${personalRepos}</div>
+                        <div class="stat-label">Personal Repositories (Level 3)</div>
+                    </div>
+                    <div class="stat-item">
+                        <div class="stat-number">${orgRepos}</div>
+                        <div class="stat-label">Organization Connections (Level 3)</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        // Check for embedded data first, then try auto-load
+        async function autoLoadLatestAnalysis() {
+            const welcomeMessage = document.getElementById('welcomeMessage');
+            
+            // Check if data is embedded in the page (EMBEDDED_DATA will be replaced by Python script)
+            if (typeof window.EMBEDDED_DATA !== 'undefined' && window.EMBEDDED_DATA) {
+                console.log('Loading embedded analysis data...');
+                welcomeMessage.textContent = '✅ Loading embedded analysis data...';
+                
+                try {
+                    validateAndLoadData(window.EMBEDDED_DATA);
+                    document.getElementById('fileInputLabel').textContent = `✅ Embedded data: ${window.EMBEDDED_DATA.organization_name} (${window.EMBEDDED_DATA.analysis_date ? new Date(window.EMBEDDED_DATA.analysis_date).toLocaleDateString() : 'Unknown date'})`;
+                    return true;
+                } catch (error) {
+                    console.error('Error loading embedded data:', error);
+                    welcomeMessage.textContent = '❌ Error loading embedded data - try manual upload';
+                    return false;
+                }
+            }
+            
+            // Fallback to fetching latest_analysis.json
+            try {
+                welcomeMessage.textContent = '🔍 Looking for latest analysis...';
+                const response = await fetch('latest_analysis.json');
+                
+                if (response.ok) {
+                    const jsonData = await response.json();
+                    console.log('Auto-loading latest analysis...');
+                    welcomeMessage.textContent = '✅ Latest analysis found - loading graph...';
+                    
+                    validateAndLoadData(jsonData);
+                    document.getElementById('fileInputLabel').textContent = `✅ Auto-loaded: ${jsonData.organization_name} (${jsonData.analysis_date ? new Date(jsonData.analysis_date).toLocaleDateString() : 'Unknown date'})`;
+                    
+                    return true;
+                } else {
+                    welcomeMessage.textContent = '📁 No latest analysis found - upload your JSON file to get started';
+                }
+            } catch (error) {
+                console.log('Auto-load error:', error);
+                welcomeMessage.textContent = '📁 No latest analysis found - upload your JSON file to get started';
+            }
+            return false;
+        }
+
+        // Refresh function for the button
+        async function refreshLatestAnalysis() {
+            console.log('Refreshing latest analysis...');
+            const success = await autoLoadLatestAnalysis();
+            if (!success) {
+                alert('No latest analysis found. Please run the GitHub contributor analyzer first or upload a JSON file manually.');
+            }
+        }
+
+        // Drag and drop functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            // Try to auto-load latest analysis first (with small delay to ensure DOM is ready)
+            setTimeout(() => {
+                autoLoadLatestAnalysis();
+            }, 100);
+            const fileInputWrapper = document.querySelector('.file-input');
+            
+            // Prevent default drag behaviors
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                fileInputWrapper.addEventListener(eventName, preventDefaults, false);
+                document.body.addEventListener(eventName, preventDefaults, false);
+            });
+
+            // Highlight drop area when item is dragged over it
+            ['dragenter', 'dragover'].forEach(eventName => {
+                fileInputWrapper.addEventListener(eventName, highlight, false);
+            });
+
+            ['dragleave', 'drop'].forEach(eventName => {
+                fileInputWrapper.addEventListener(eventName, unhighlight, false);
+            });
+
+            // Handle dropped files
+            fileInputWrapper.addEventListener('drop', handleDrop, false);
+
+            function preventDefaults(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }
+
+            function highlight(e) {
+                fileInputWrapper.style.background = '#e3f2fd';
+                fileInputWrapper.style.borderColor = '#4facfe';
+            }
+
+            function unhighlight(e) {
+                fileInputWrapper.style.background = '#f8f9fa';
+                fileInputWrapper.style.borderColor = '#667eea';
+            }
+
+            function handleDrop(e) {
+                const dt = e.dataTransfer;
+                const files = dt.files;
+                
+                if (files.length > 0) {
+                    const file = files[0];
+                    if (file.type === 'application/json' || file.name.endsWith('.json')) {
+                        document.getElementById('fileInput').files = files;
+                        handleFileUpload({target: {files: files}});
+                    } else {
+                        showError('Please drop a JSON file');
+                    }
+                }
+            }
+        });
+    </script>
+</body>
+</html>

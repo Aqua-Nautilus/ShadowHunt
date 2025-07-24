@@ -1,0 +1,32 @@
+# Analysis results
+analysis_*.json
+latest_analysis.json
+visualization_*.html
+
+# Scanning results
+scans/
+*.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Environment
+.env
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
