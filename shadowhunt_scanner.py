@@ -45,6 +45,9 @@ class GitleaksScanner:
         # Global set for secret deduplication
         self.found_secrets = set()
         
+        # Date filtering
+        self.filter_date = None  # Will be set by user input
+        
         # Statistics
         self.total_secrets_found = 0
         self.scanned_repos = 0
@@ -288,6 +291,44 @@ class GitleaksScanner:
             except ValueError:
                 print("Please enter a valid number")
     
+    def prompt_date_filter(self) -> bool:
+        """Prompt user for date filtering option"""
+        print("\n📅 DATE FILTERING OPTIONS")
+        print("="*60)
+        print("You can filter secrets to show only those from commits after a specific date.")
+        print("This helps focus on recent secrets and avoid noise from old commits.")
+        print()
+        
+        while True:
+            use_filter = input("Would you like to filter secrets by commit date? (y/n): ").strip().lower()
+            if use_filter in ['y', 'yes']:
+                break
+            elif use_filter in ['n', 'no']:
+                print("✅ No date filtering will be applied - showing all secrets")
+                return True
+            else:
+                print("Please enter 'y' for yes or 'n' for no")
+        
+        print("\nEnter the date to filter from (secrets from this date onwards will be shown)")
+        print("Format: YYYY-MM-DD (e.g., 2024-01-01)")
+        print("Or press Enter to skip date filtering")
+        
+        while True:
+            date_input = input("Filter date: ").strip()
+            if not date_input:
+                print("✅ No date filtering will be applied - showing all secrets")
+                return True
+            
+            try:
+                import datetime
+                # Validate date format
+                filter_date = datetime.datetime.strptime(date_input, '%Y-%m-%d')
+                self.filter_date = filter_date.strftime('%Y-%m-%d %H:%M:%S')
+                print(f"✅ Will show secrets from commits after: {self.filter_date}")
+                return True
+            except ValueError:
+                print("❌ Invalid date format. Please use YYYY-MM-DD (e.g., 2024-01-01)")
+
     def prompt_user_consent(self) -> bool:
         """Prompt user for consent to scan repositories"""
         print("\n" + "="*80)
@@ -299,8 +340,10 @@ class GitleaksScanner:
         print("  • Detect forks from the master organization")
         print("  • Filter repositories by size to optimize scanning")
         print("  • Scan each repository for exposed secrets using gitleaks")
+        print("  • Track commit dates for each secret found")
         print("  • Show detailed secret information with GitHub links")
         print("  • Display file content and commit information")
+        print("  • Save results to file at the end")
         print()
         
         while True:
@@ -448,6 +491,62 @@ class GitleaksScanner:
         except Exception:
             return "unknown"
     
+    def get_commit_date_for_line(self, repo_path: Path, file_path: str, line_number: int) -> tuple[str, str]:
+        """Get the commit date and hash for a specific line in a file using git blame"""
+        try:
+            result = subprocess.run([
+                'git', 'blame', '-L', f'{line_number},{line_number}', '--porcelain', file_path
+            ], cwd=str(repo_path), capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                lines = result.stdout.strip().split('\n')
+                if lines:
+                    # First line contains the commit hash
+                    commit_hash = lines[0].split()[0]
+                    
+                    # Look for author-time line
+                    author_time = None
+                    for line in lines:
+                        if line.startswith('author-time '):
+                            author_time = line.split(' ', 1)[1]
+                            break
+                    
+                    if author_time:
+                        # Convert Unix timestamp to readable date
+                        import datetime
+                        commit_date = datetime.datetime.fromtimestamp(int(author_time)).strftime('%Y-%m-%d %H:%M:%S')
+                        return commit_date, commit_hash
+                    else:
+                        # Fallback: use git log to get commit date
+                        return self.get_commit_date_from_hash(repo_path, commit_hash)
+                
+            return "unknown", "unknown"
+        except Exception:
+            return "unknown", "unknown"
+    
+    def get_commit_date_from_hash(self, repo_path: Path, commit_hash: str) -> tuple[str, str]:
+        """Get commit date from commit hash using git log"""
+        try:
+            result = subprocess.run([
+                'git', 'log', '-1', '--format=%ci', commit_hash
+            ], cwd=str(repo_path), capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                commit_date = result.stdout.strip()
+                # Convert to consistent format (remove timezone info)
+                if commit_date:
+                    import datetime
+                    try:
+                        # Parse the git date format and convert to our format
+                        dt = datetime.datetime.strptime(commit_date[:19], '%Y-%m-%d %H:%M:%S')
+                        return dt.strftime('%Y-%m-%d %H:%M:%S'), commit_hash
+                    except ValueError:
+                        return commit_date.split(' ')[0] + " " + commit_date.split(' ')[1], commit_hash
+                
+            return "unknown", commit_hash
+        except Exception:
+            return "unknown", commit_hash
+    
     def read_file_content(self, repo_path: Path, file_path: str, line_number: int) -> Tuple[str, List[str]]:
         """Read file content around the secret line"""
         try:
@@ -544,12 +643,15 @@ class GitleaksScanner:
             # Analyze results
             secrets_count, secrets_data = self.analyze_gitleaks_report(report_path)
             
-            # Filter secrets based on file paths and deduplication
+            # Filter secrets based on file paths, deduplication, and date
             filtered_secrets = []
+            date_filtered_count = 0
+            
             for secret in secrets_data:
                 file_path = secret.get('File', '')
                 secret_value = secret.get('Secret', '')
                 rule_id = secret.get('RuleID', '')
+                line_number = secret.get('StartLine', 0)
                 
                 # Filter out secrets in unwanted files
                 if self.should_filter_file(file_path):
@@ -559,6 +661,25 @@ class GitleaksScanner:
                 secret_hash = self.create_secret_hash(secret_value, file_path, rule_id)
                 if secret_hash in self.found_secrets:
                     continue
+                
+                # Get commit date for this secret
+                commit_date, secret_commit_hash = self.get_commit_date_for_line(clone_path, file_path, line_number)
+                secret['commit_date'] = commit_date
+                secret['secret_commit_hash'] = secret_commit_hash
+                
+                # Apply date filtering if enabled
+                if self.filter_date and commit_date != "unknown":
+                    try:
+                        import datetime
+                        secret_datetime = datetime.datetime.strptime(commit_date, '%Y-%m-%d %H:%M:%S')
+                        filter_datetime = datetime.datetime.strptime(self.filter_date, '%Y-%m-%d %H:%M:%S')
+                        
+                        if secret_datetime < filter_datetime:
+                            date_filtered_count += 1
+                            continue
+                    except ValueError:
+                        # If date parsing fails, include the secret
+                        pass
                 
                 # Add to found secrets set and filtered list
                 self.found_secrets.add(secret_hash)
@@ -574,8 +695,14 @@ class GitleaksScanner:
             
             if len(filtered_secrets) > 0:
                 print(f"    🚨 {len(filtered_secrets)} unique secret(s) found!")
-                if secrets_count > len(filtered_secrets):
-                    print(f"    🚫 Filtered out {secrets_count - len(filtered_secrets)} duplicates/unwanted files")
+                total_filtered = secrets_count - len(filtered_secrets)
+                if total_filtered > 0:
+                    filter_reasons = []
+                    if secrets_count - date_filtered_count - (secrets_count - len(filtered_secrets) - date_filtered_count) > 0:
+                        filter_reasons.append("duplicates/unwanted files")
+                    if date_filtered_count > 0:
+                        filter_reasons.append(f"{date_filtered_count} by date filter")
+                    print(f"    🚫 Filtered out {total_filtered}: {', '.join(filter_reasons)}")
                 
                 # Show detailed secrets immediately
                 for i, secret in enumerate(filtered_secrets, 1):
@@ -583,6 +710,8 @@ class GitleaksScanner:
                     file_path = secret.get('File', 'Unknown File')
                     line_number = secret.get('StartLine', 0)
                     secret_value = secret.get('Secret', 'Unknown Secret')
+                    commit_date = secret.get('commit_date', 'unknown')
+                    secret_commit_hash = secret.get('secret_commit_hash', commit_hash)
                     
                     print(f"\n    🚨 SECRET #{i}:")
                     print(f"       👤 Maintainer: {repo_info.maintainer_username}")
@@ -591,10 +720,11 @@ class GitleaksScanner:
                     print(f"       📝 Rule: {rule_name}")
                     print(f"       📄 File: {file_path}")
                     print(f"       📍 Line: {line_number}")
-                    print(f"       🔗 Commit: {commit_hash}")
+                    print(f"       📅 Commit Date: {commit_date}")
+                    print(f"       🔗 Commit Hash: {secret_commit_hash}")
                     
-                    # Create GitHub link
-                    github_link = self.create_github_link(repo_info.full_name, commit_hash, file_path, line_number)
+                    # Create GitHub link using the secret's specific commit hash
+                    github_link = self.create_github_link(repo_info.full_name, secret_commit_hash, file_path, line_number)
                     print(f"       🌐 GitHub Link: {github_link}")
                     
                     # Show file content
@@ -610,7 +740,12 @@ class GitleaksScanner:
             else:
                 print(f"    ✅ No secrets found")
                 if secrets_count > 0:
-                    print(f"    🚫 Filtered out {secrets_count} secrets from unwanted files/duplicates")
+                    filter_reasons = []
+                    if secrets_count - date_filtered_count > 0:
+                        filter_reasons.append("unwanted files/duplicates")
+                    if date_filtered_count > 0:
+                        filter_reasons.append(f"{date_filtered_count} by date filter")
+                    print(f"    🚫 Filtered out {secrets_count}: {', '.join(filter_reasons)}")
             
             # Clean up cloned repo to save space (but keep it temporarily for file reading)
             # We'll clean up later after all processing is done
@@ -720,8 +855,89 @@ class GitleaksScanner:
         if self.total_secrets_found > 0:
             print(f"\n🚨 ACTION REQUIRED: {self.total_secrets_found} secrets found!")
             print("   Review the detailed findings above and take appropriate action.")
-        else:
+        else:    
             print(f"\n✅ No secrets detected in any scanned repositories!")
+    
+    def save_results_to_file(self, scan_results: List[Dict], analysis_data: Dict) -> str:
+        """Save detailed scan results to a JSON file"""
+        try:
+            import datetime
+            timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+            org_name = analysis_data.get('organization_name', 'unknown').replace(' ', '_').lower()
+            filename = f"shadowhunt_results_{org_name}_{timestamp}.json"
+            filepath = self.scan_base_dir / filename
+            
+            # Prepare detailed results
+            detailed_results = {
+                'scan_metadata': {
+                    'timestamp': datetime.datetime.now().isoformat(),
+                    'organization_name': analysis_data.get('organization_name', 'Unknown'),
+                    'total_maintainers': len(analysis_data.get('maintainers', [])),
+                    'date_filter_applied': self.filter_date,
+                    'max_repo_size_mb': self.max_repo_size_mb,
+                    'scanner_version': 'ShadowHunt Enhanced v2.0'
+                },
+                'statistics': {
+                    'total_repos_analyzed': self.total_repos_analyzed,
+                    'successfully_scanned': self.scanned_repos,
+                    'failed_scans': self.failed_repos,
+                    'skipped_repos': self.skipped_repos,
+                    'filtered_users': self.filtered_users,
+                    'total_unique_secrets_found': self.total_secrets_found
+                },
+                'secrets_found': [],
+                'repositories_scanned': []
+            }
+            
+            # Add detailed secret information
+            for result in scan_results:
+                if result['success']:
+                    repo_info = result['repo_info']
+                    repo_entry = {
+                        'repository': repo_info.full_name,
+                        'maintainer': repo_info.maintainer_username,
+                        'repo_type': repo_info.repo_type,
+                        'size_mb': round(repo_info.size_kb / 1024, 2),
+                        'is_fork': repo_info.is_fork,
+                        'is_fork_of_master_org': repo_info.is_fork_of_master_org,
+                        'fork_parent': repo_info.fork_parent,
+                        'secrets_count': result['secrets_found'],
+                        'scan_commit_hash': result['commit_hash']
+                    }
+                    detailed_results['repositories_scanned'].append(repo_entry)
+                    
+                    # Add individual secrets
+                    for secret in result['secrets_data']:
+                        secret_entry = {
+                            'maintainer': repo_info.maintainer_username,
+                            'repository': repo_info.full_name,
+                            'repo_type': repo_info.repo_type,
+                            'is_fork': repo_info.is_fork,
+                            'is_fork_of_master_org': repo_info.is_fork_of_master_org,
+                            'secret_value': secret.get('Secret', ''),
+                            'rule_id': secret.get('RuleID', ''),
+                            'file_path': secret.get('File', ''),
+                            'line_number': secret.get('StartLine', 0),
+                            'commit_date': secret.get('commit_date', 'unknown'),
+                            'commit_hash': secret.get('secret_commit_hash', 'unknown'),
+                            'github_link': self.create_github_link(
+                                repo_info.full_name, 
+                                secret.get('secret_commit_hash', result['commit_hash']), 
+                                secret.get('File', ''), 
+                                secret.get('StartLine', 0)
+                            )
+                        }
+                        detailed_results['secrets_found'].append(secret_entry)
+            
+            # Save to file
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(detailed_results, f, indent=2, ensure_ascii=False)
+            
+            return str(filepath)
+            
+        except Exception as e:
+            print(f"❌ Error saving results to file: {e}")
+            return ""
     
     def scan_from_analysis_file(self, json_file: str) -> bool:
         """Main function to scan repositories from analysis JSON file"""
@@ -729,6 +945,10 @@ class GitleaksScanner:
         
         # Check if user wants to proceed
         if not self.prompt_user_consent():
+            return False
+        
+        # Get date filtering preferences
+        if not self.prompt_date_filter():
             return False
         
         # Check if gitleaks is available
@@ -841,6 +1061,19 @@ class GitleaksScanner:
         
         # Print final summary
         self.print_final_summary(eligible_repos, scan_results)
+        
+        # Save detailed results to file
+        print(f"\n💾 Saving detailed results to file...")
+        saved_file = self.save_results_to_file(scan_results, analysis_data)
+        if saved_file:
+            print(f"✅ Results saved to: {saved_file}")
+            print(f"   This file contains:")
+            print(f"   • Complete scan metadata and statistics")
+            print(f"   • Detailed information for each secret found")
+            print(f"   • Commit dates and GitHub links")
+            print(f"   • Repository and maintainer information")
+        else:
+            print(f"❌ Failed to save results to file")
         
         return True
 
