@@ -1244,6 +1244,11 @@ class GitleaksScanner:
         """Main function to scan repositories from analysis JSON file"""
         print("🚀 Starting ShadowHunt Enhanced Gitleaks Secret Scanning")
         
+        # Parse the analysis JSON first (needed for domain detection and user prompts)
+        analysis_data = self.parse_analysis_json(json_file)
+        if not analysis_data:
+            return False
+        
         # Check if user wants to proceed
         if not self.prompt_user_consent():
             return False
@@ -1263,11 +1268,6 @@ class GitleaksScanner:
         # Check GitHub rate limit
         if not self.check_github_rate_limit():
             print("⚠️  Proceeding without rate limit information")
-        
-        # Parse the analysis JSON
-        analysis_data = self.parse_analysis_json(json_file)
-        if not analysis_data:
-            return False
         
         # Setup directories
         try:
