@@ -410,18 +410,15 @@ class GitleaksScanner:
                 count += 1
         return count
 
-    def prompt_maintainer_scope(self) -> bool:
+    def prompt_maintainer_scope(self, analysis_data: Dict) -> bool:
         """Prompt user to choose between all maintainers or organization maintainers only"""
         print("\n👥 MAINTAINER SCOPE SELECTION")
         print("="*60)
         
-        # Get maintainers data from the analysis
-        try:
-            with open(self.analysis_file, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            maintainers = data.get('maintainers', [])
-        except:
-            print("❌ Could not load maintainers data")
+        # Use the analysis data that was already loaded
+        maintainers = analysis_data.get('maintainers', [])
+        if not maintainers:
+            print("❌ No maintainers data found in analysis")
             return False
         
         total_maintainers = len(maintainers)
@@ -1256,7 +1253,7 @@ class GitleaksScanner:
             return False
         
         # Get maintainer scope preferences (all vs organization maintainers only)
-        if not self.prompt_maintainer_scope():
+        if not self.prompt_maintainer_scope(analysis_data):
             return False
         
         # Check if gitleaks is available
