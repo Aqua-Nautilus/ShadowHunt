@@ -484,7 +484,7 @@ class GitHubContributorAnalyzer:
             maintainers_with_repos.append(maintainer_info)
             
             # Rate limiting
-            if i < len(top_contributors):
+            if i < len(all_contributors):
                 time.sleep(0.2)
         
         output_data = {
@@ -493,7 +493,7 @@ class GitHubContributorAnalyzer:
             'analysis_date': datetime.now().isoformat(),
             'total_contributors': len(contributors),
             'total_maintainers': len(maintainers),
-            'top_contributors_analyzed': len(top_contributors),
+            'all_contributors_analyzed': len(all_contributors),
             'maintainers': maintainers_with_repos
         }
         
