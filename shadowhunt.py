@@ -109,6 +109,19 @@ class GitHubContributorAnalyzer:
         print(f"✅ Found {len(result)} repositories")
         return result
     
+    def should_filter_user(self, username: str) -> bool:
+        """Check if user should be filtered out"""
+        if not username:
+            return True
+        
+        username_lower = username.lower()
+        
+        # Filter dependabot and gitstart users
+        if username_lower == "dependabot[bot]" or username_lower.startswith("gitstart"):
+            return True
+            
+        return False
+
     def analyze_repository_contributors(self, repo_full_name: str, max_commits: int = 1000) -> Dict[str, dict]:
         """Analyze contributors for a single repository"""
         print(f"  🔍 Analyzing: {repo_full_name}")
@@ -121,6 +134,7 @@ class GitHubContributorAnalyzer:
         url = f"https://api.github.com/repos/{repo_full_name}/commits"
         commits = self.fetch_all_pages(url, {}, max_pages=max_commits // 100)
         
+        filtered_count = 0
         for commit in commits[:max_commits]:
             author = commit.get('author')
             commit_data = commit.get('commit', {})
@@ -128,6 +142,12 @@ class GitHubContributorAnalyzer:
             
             if author and author.get('login'):
                 username = author['login']
+                
+                # Filter out unwanted users
+                if self.should_filter_user(username):
+                    filtered_count += 1
+                    continue
+                
                 email = author_data.get('email', '').strip().lower()
                 commit_date = author_data.get('date')
                 
@@ -143,7 +163,8 @@ class GitHubContributorAnalyzer:
                     if not contributors[username]['last_commit'] or commit_date > contributors[username]['last_commit']:
                         contributors[username]['last_commit'] = commit_date
         
-        print(f"    ✅ Found {len(contributors)} contributors")
+        filtered_msg = f" (filtered {filtered_count} bot/automated commits)" if filtered_count > 0 else ""
+        print(f"    ✅ Found {len(contributors)} contributors{filtered_msg}")
         return contributors
     
     def analyze_target(self, target: str, max_repos: int = 50, max_commits_per_repo: int = 1000) -> Dict[str, dict]:

@@ -42,12 +42,16 @@ class GitleaksScanner:
         self.master_org = None  # Will be set from analysis data
         self.github_token = github_token
         
+        # Global set for secret deduplication
+        self.found_secrets = set()
+        
         # Statistics
         self.total_secrets_found = 0
         self.scanned_repos = 0
         self.failed_repos = 0
         self.skipped_repos = 0
         self.total_repos_analyzed = 0
+        self.filtered_users = 0
         
         # GitHub API setup
         self.github_session = requests.Session()
@@ -61,6 +65,47 @@ class GitleaksScanner:
         self.github_session.headers.update(headers)
         self.rate_limit_remaining = None
         self.rate_limit_reset = None
+        
+    def should_filter_user(self, username: str) -> bool:
+        """Check if user should be filtered out"""
+        if not username:
+            return True
+        
+        username_lower = username.lower()
+        
+        # Filter dependabot and gitstart users
+        if username_lower == "dependabot[bot]" or username_lower.startswith("gitstart"):
+            return True
+            
+        return False
+    
+    def should_filter_file(self, file_path: str) -> bool:
+        """Check if file should be filtered out based on path and name"""
+        if not file_path:
+            return True
+        
+        file_path_lower = file_path.lower()
+        
+        # Filter README and markdown files
+        if file_path_lower.endswith('.md') or 'readme' in file_path_lower:
+            return True
+        
+        # Filter test-related directories and files
+        test_patterns = ['test', 'testing', 'tests', '__tests__', 'spec', '__test__']
+        path_parts = file_path_lower.split('/')
+        
+        for part in path_parts:
+            for pattern in test_patterns:
+                if pattern in part:
+                    return True
+        
+        return False
+    
+    def create_secret_hash(self, secret_value: str, file_path: str, rule_id: str) -> str:
+        """Create a hash for secret deduplication"""
+        import hashlib
+        combined = f"{secret_value}_{file_path}_{rule_id}"
+        return hashlib.md5(combined.encode()).hexdigest()
         
     def check_gitleaks_available(self) -> bool:
         """Check if gitleaks command is available in PATH"""
@@ -313,6 +358,13 @@ class GitleaksScanner:
         
         for maintainer in maintainers:
             username = maintainer.get('username', 'unknown')
+            
+            # Filter out unwanted users
+            if self.should_filter_user(username):
+                print(f"  🚫 Filtered user: {username}")
+                self.filtered_users += 1
+                continue
+                
             personal_repos = maintainer.get('personal_repositories', [])
             org_repos = maintainer.get('organization_repositories', [])
             
@@ -491,19 +543,42 @@ class GitleaksScanner:
             
             # Analyze results
             secrets_count, secrets_data = self.analyze_gitleaks_report(report_path)
+            
+            # Filter secrets based on file paths and deduplication
+            filtered_secrets = []
+            for secret in secrets_data:
+                file_path = secret.get('File', '')
+                secret_value = secret.get('Secret', '')
+                rule_id = secret.get('RuleID', '')
+                
+                # Filter out secrets in unwanted files
+                if self.should_filter_file(file_path):
+                    continue
+                
+                # Check for duplicate secrets
+                secret_hash = self.create_secret_hash(secret_value, file_path, rule_id)
+                if secret_hash in self.found_secrets:
+                    continue
+                
+                # Add to found secrets set and filtered list
+                self.found_secrets.add(secret_hash)
+                filtered_secrets.append(secret)
+            
             result['success'] = True
-            result['secrets_found'] = secrets_count
-            result['secrets_data'] = secrets_data
+            result['secrets_found'] = len(filtered_secrets)
+            result['secrets_data'] = filtered_secrets
             
             # Update statistics
-            self.total_secrets_found += secrets_count
+            self.total_secrets_found += len(filtered_secrets)
             self.scanned_repos += 1
             
-            if secrets_count > 0:
-                print(f"    🚨 {secrets_count} secret(s) found!")
+            if len(filtered_secrets) > 0:
+                print(f"    🚨 {len(filtered_secrets)} unique secret(s) found!")
+                if secrets_count > len(filtered_secrets):
+                    print(f"    🚫 Filtered out {secrets_count - len(filtered_secrets)} duplicates/unwanted files")
                 
                 # Show detailed secrets immediately
-                for i, secret in enumerate(secrets_data, 1):
+                for i, secret in enumerate(filtered_secrets, 1):
                     rule_name = secret.get('RuleID', 'Unknown Rule')
                     file_path = secret.get('File', 'Unknown File')
                     line_number = secret.get('StartLine', 0)
@@ -534,6 +609,8 @@ class GitleaksScanner:
                 
             else:
                 print(f"    ✅ No secrets found")
+                if secrets_count > 0:
+                    print(f"    🚫 Filtered out {secrets_count} secrets from unwanted files/duplicates")
             
             # Clean up cloned repo to save space (but keep it temporarily for file reading)
             # We'll clean up later after all processing is done
@@ -602,10 +679,13 @@ class GitleaksScanner:
         print(f"   🔍 Successfully scanned: {scanned_count}")
         print(f"   ❌ Failed to scan: {failed_count}")
         print(f"   ⏭️  Skipped (size limit): {skipped_count}")
+        print(f"   🚫 Filtered users (dependabot/gitstart): {self.filtered_users}")
         
         # Secret findings
         print(f"\n🔍 Secret Detection:")
-        print(f"   🚨 Total secrets found: {self.total_secrets_found}")
+        print(f"   🚨 Total unique secrets found: {self.total_secrets_found}")
+        print(f"   📝 Duplicates filtered: {len(self.found_secrets) - self.total_secrets_found if len(self.found_secrets) > self.total_secrets_found else 0}")
+        print(f"   🚫 Files filtered (README/test files): Applied per scan")
         
         if self.total_secrets_found > 0:
             # Fork analysis
