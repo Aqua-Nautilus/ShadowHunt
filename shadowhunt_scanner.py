@@ -483,7 +483,7 @@ class GitleaksScanner:
         return all_repos
     
     def clone_repository(self, repo_url: str, clone_path: Path) -> bool:
-        """Clone a repository as mirror to the specified path with .git extension"""
+        """Clone a repository to the specified path with .git extension"""
         try:
             # Remove existing directory if it exists
             if clone_path.exists():
@@ -492,9 +492,10 @@ class GitleaksScanner:
             # Create parent directories
             clone_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # Clone the repository as mirror (bare repository with .git extension)
+            # Clone the repository (regular clone with depth 1 for efficiency)
+            # Keep .git extension in folder name as requested
             result = subprocess.run([
-                'git', 'clone', '--mirror', repo_url, str(clone_path)
+                'git', 'clone', '--depth', '1', repo_url, str(clone_path)
             ], capture_output=True, text=True, timeout=300)
             
             if result.returncode == 0:
