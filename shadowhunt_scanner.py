@@ -400,37 +400,20 @@ class GitleaksScanner:
         valid_domains = [(domain, len(users)) for domain, users in domain_users.items() if len(users) >= min_users]
         return sorted(valid_domains, key=lambda x: x[1], reverse=True)
 
+    def count_maintainers_by_domain(self, maintainers: List[Dict], domain: str) -> int:
+        """Count how many maintainers have the specified domain"""
+        count = 0
+        for maintainer in maintainers:
+            emails = maintainer.get('emails', [])
+            has_domain_email = any(email.endswith(f'@{domain}') for email in emails)
+            if has_domain_email:
+                count += 1
+        return count
+
     def prompt_maintainer_scope(self) -> bool:
         """Prompt user to choose between all maintainers or organization maintainers only"""
-        # If we have an org domain, use it
-        if self.org_domain:
-            print("\n👥 MAINTAINER SCOPE SELECTION")
-            print("="*60)
-            print(f"Organization domain detected: {self.org_domain}")
-            print()
-            print("Choose which maintainers to scan:")
-            print(f"  1. 🌍 All maintainers (includes external contributors)")
-            print(f"  2. 🏢 Organization maintainers only (users with @{self.org_domain} email)")
-            print()
-            
-            while True:
-                choice = input("Enter your choice (1 for all, 2 for organization only): ").strip()
-                if choice == '1':
-                    self.org_maintainers_only = False
-                    print("✅ Will scan all maintainers (internal + external contributors)")
-                    return True
-                elif choice == '2':
-                    self.org_maintainers_only = True
-                    print(f"✅ Will scan only organization maintainers with @{self.org_domain} email")
-                    return True
-                else:
-                    print("Please enter '1' for all maintainers or '2' for organization maintainers only")
-        
-        # Fallback: let user choose from top domains
-        print("\n👥 DOMAIN SELECTION FOR FILTERING")
+        print("\n👥 MAINTAINER SCOPE SELECTION")
         print("="*60)
-        print("No primary organization domain detected. Choose a domain to filter by:")
-        print()
         
         # Get maintainers data from the analysis
         try:
@@ -438,17 +421,47 @@ class GitleaksScanner:
                 data = json.load(f)
             maintainers = data.get('maintainers', [])
         except:
-            print("✅ Will scan all maintainers (no domain filtering)")
-            return True
+            print("❌ Could not load maintainers data")
+            return False
+        
+        total_maintainers = len(maintainers)
+        
+        # If we have a detected org domain, use it
+        if self.org_domain:
+            org_maintainers_count = self.count_maintainers_by_domain(maintainers, self.org_domain)
+            
+            print(f"Organization domain detected: {self.org_domain}")
+            print()
+            print("Choose which maintainers to scan:")
+            print(f"  1. 🌍 All maintainers ({total_maintainers} users)")
+            print(f"  2. 🏢 Organization maintainers only ({org_maintainers_count} users with @{self.org_domain} email)")
+            print()
+            
+            while True:
+                choice = input("Enter your choice (1 for all, 2 for organization only): ").strip()
+                if choice == '1':
+                    self.org_maintainers_only = False
+                    print(f"✅ Will scan all {total_maintainers} maintainers (internal + external contributors)")
+                    return True
+                elif choice == '2':
+                    self.org_maintainers_only = True
+                    print(f"✅ Will scan only {org_maintainers_count} organization maintainers with @{self.org_domain} email")
+                    return True
+                else:
+                    print("Please enter '1' for all maintainers or '2' for organization maintainers only")
+        
+        # Fallback: let user choose from top domains
+        print("No primary organization domain detected. Choose a domain to filter by:")
+        print()
         
         top_domains = self.get_top_domains_from_maintainers(maintainers)
         
         if not top_domains:
-            print("✅ No domains with multiple users found - will scan all maintainers")
+            print(f"✅ No domains with multiple users found - will scan all {total_maintainers} maintainers")
             return True
         
         print("Top domains found:")
-        print(f"  0. 🌍 All maintainers (no domain filtering)")
+        print(f"  0. 🌍 All maintainers ({total_maintainers} users)")
         for i, (domain, count) in enumerate(top_domains[:10], 1):  # Show top 10
             print(f"  {i}. 🏢 @{domain} ({count} users)")
         print()
@@ -460,13 +473,14 @@ class GitleaksScanner:
                 
                 if choice_num == 0:
                     self.org_maintainers_only = False
-                    print("✅ Will scan all maintainers (no domain filtering)")
+                    print(f"✅ Will scan all {total_maintainers} maintainers (no domain filtering)")
                     return True
                 elif 1 <= choice_num <= len(top_domains[:10]):
                     selected_domain = top_domains[choice_num - 1][0]
+                    selected_count = top_domains[choice_num - 1][1]
                     self.org_domain = selected_domain
                     self.org_maintainers_only = True
-                    print(f"✅ Will scan only users with @{selected_domain} email addresses")
+                    print(f"✅ Will scan only {selected_count} users with @{selected_domain} email addresses")
                     return True
                 else:
                     print(f"Please enter a number between 0 and {len(top_domains[:10])}")
