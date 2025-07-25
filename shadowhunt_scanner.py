@@ -49,7 +49,7 @@ class GitleaksScanner:
         self.filter_date = None  # Will be set by user input
         
         # Organization email filtering
-        self.org_email_only = False  # Will be set by user input
+        self.org_maintainers_only = False  # Will be set by user input (scan only org maintainers)
         self.org_domain = None  # Will be extracted from analysis data
         
         # Statistics
@@ -343,29 +343,36 @@ class GitleaksScanner:
             except ValueError:
                 print("❌ Invalid date format. Please use YYYY-MM-DD (e.g., 2024-01-01)")
 
-    def prompt_org_email_filter(self) -> bool:
-        """Prompt user for organization email filtering option"""
+    def prompt_maintainer_scope(self) -> bool:
+        """Prompt user to choose between all maintainers or organization maintainers only"""
         if not self.org_domain:
+            print("✅ No organization domain detected - will scan all maintainers")
             return True  # Skip if no org domain detected
             
-        print("\n📧 ORGANIZATION EMAIL FILTERING")
+        print("\n👥 MAINTAINER SCOPE SELECTION")
         print("="*60)
         print(f"Organization domain detected: {self.org_domain}")
-        print("You can filter to scan only maintainers with organization email addresses.")
-        print("This helps focus on internal users and reduces scanning of external contributors.")
+        print()
+        print("Choose which maintainers to scan:")
+        print(f"  1. 🌍 All maintainers (includes external contributors)")
+        print(f"  2. 🏢 Organization maintainers only (users with @{self.org_domain} email)")
+        print()
+        print("Organization maintainers are users who have the company email address,")
+        print("which typically indicates they are internal employees or team members.")
         print()
         
         while True:
-            use_filter = input(f"Scan only users with @{self.org_domain} email addresses? (y/n): ").strip().lower()
-            if use_filter in ['y', 'yes']:
-                self.org_email_only = True
-                print(f"✅ Will scan only users with @{self.org_domain} email addresses")
+            choice = input("Enter your choice (1 for all, 2 for organization only): ").strip()
+            if choice == '1':
+                self.org_maintainers_only = False
+                print("✅ Will scan all maintainers (internal + external contributors)")
                 return True
-            elif use_filter in ['n', 'no']:
-                print("✅ Will scan all maintainers regardless of email domain")
+            elif choice == '2':
+                self.org_maintainers_only = True
+                print(f"✅ Will scan only organization maintainers with @{self.org_domain} email")
                 return True
             else:
-                print("Please enter 'y' for yes or 'n' for no")
+                print("Please enter '1' for all maintainers or '2' for organization maintainers only")
 
     def prompt_user_consent(self) -> bool:
         """Prompt user for consent to scan repositories"""
@@ -451,12 +458,12 @@ class GitleaksScanner:
                 self.filtered_users += 1
                 continue
             
-            # Filter by organization email if enabled
-            if self.org_email_only and self.org_domain:
+            # Filter by organization maintainers if enabled
+            if self.org_maintainers_only and self.org_domain:
                 maintainer_emails = maintainer.get('emails', [])
                 has_org_email = any(email.endswith(f'@{self.org_domain}') for email in maintainer_emails)
                 if not has_org_email:
-                    print(f"  🚫 Filtered user (no @{self.org_domain} email): {username}")
+                    print(f"  🚫 Filtered user (not organization maintainer): {username}")
                     self.filtered_users += 1
                     continue
                 
@@ -868,8 +875,8 @@ class GitleaksScanner:
         print(f"   ❌ Failed to scan: {failed_count}")
         print(f"   ⏭️  Skipped (size limit): {skipped_count}")
         filter_desc = "dependabot/gitstart"
-        if self.org_email_only:
-            filter_desc += f"/non-@{self.org_domain}"
+        if self.org_maintainers_only:
+            filter_desc += f"/non-organization maintainers"
         print(f"   🚫 Filtered users ({filter_desc}): {self.filtered_users}")
         
         # Secret findings
@@ -930,7 +937,7 @@ class GitleaksScanner:
                     'organization_name': analysis_data.get('organization_name', 'Unknown'),
                     'total_maintainers': len(analysis_data.get('maintainers', [])),
                     'date_filter_applied': self.filter_date,
-                    'org_email_filter_applied': self.org_email_only,
+                    'org_maintainers_only': self.org_maintainers_only,
                     'org_domain': self.org_domain,
                     'max_repo_size_mb': self.max_repo_size_mb,
                     'scanner_version': 'ShadowHunt Enhanced v2.1'
@@ -1009,8 +1016,8 @@ class GitleaksScanner:
         if not self.prompt_date_filter():
             return False
         
-        # Get organization email filtering preferences
-        if not self.prompt_org_email_filter():
+        # Get maintainer scope preferences (all vs organization maintainers only)
+        if not self.prompt_maintainer_scope():
             return False
         
         # Check if gitleaks is available
