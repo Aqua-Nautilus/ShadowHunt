@@ -183,9 +183,31 @@ class GitleaksScanner:
             print(f"❌ Error checking rate limit: {e}")
             return False
     
+    def check_and_wait_for_rate_limit(self):
+        """Check rate limit and wait if necessary"""
+        if self.rate_limit_remaining is not None and self.rate_limit_remaining < 10:
+            if self.rate_limit_reset:
+                import datetime
+                reset_time = datetime.datetime.fromtimestamp(self.rate_limit_reset)
+                current_time = datetime.datetime.now()
+                wait_seconds = (reset_time - current_time).total_seconds()
+                
+                if wait_seconds > 0:
+                    reset_time_str = reset_time.strftime('%H:%M:%S')
+                    print(f"\n⚠️  GitHub API rate limit reached!")
+                    print(f"   📊 Remaining requests: {self.rate_limit_remaining}")
+                    print(f"   🕐 Rate limit resets at: {reset_time_str}")
+                    print(f"   ⏳ Waiting {int(wait_seconds)} seconds for rate limit to reset...")
+                    
+                    time.sleep(wait_seconds + 5)  # Add 5 seconds buffer
+                    print(f"   ✅ Rate limit reset! Continuing...")
+
     def get_repository_info(self, repo_full_name: str) -> Optional[Dict]:
-        """Fetch repository information from GitHub API"""
+        """Fetch repository information from GitHub API with rate limit handling"""
         try:
+            # Check rate limit before making request
+            self.check_and_wait_for_rate_limit()
+            
             url = f"https://api.github.com/repos/{repo_full_name}"
             response = self.github_session.get(url, timeout=10)
             
@@ -194,6 +216,13 @@ class GitleaksScanner:
                 self.rate_limit_remaining = int(response.headers['X-RateLimit-Remaining'])
             if 'X-RateLimit-Reset' in response.headers:
                 self.rate_limit_reset = int(response.headers['X-RateLimit-Reset'])
+            
+            # Handle rate limit exceeded response
+            if response.status_code == 403 and 'rate limit' in response.text.lower():
+                print(f"⚠️  Rate limit exceeded for {repo_full_name}, waiting...")
+                self.check_and_wait_for_rate_limit()
+                # Retry the request
+                response = self.github_session.get(url, timeout=10)
             
             if response.status_code == 200:
                 return response.json()
@@ -486,11 +515,18 @@ class GitleaksScanner:
             self.master_org = data.get('organization_name', 'Unknown')
             
             # Extract organization domain for email filtering
-            self.org_domain = data.get('company_domain') or None
-            
-            # If no company_domain in JSON, try to identify it from maintainers
-            if not self.org_domain and 'maintainers' in data:
-                self.org_domain = self.identify_company_domain_from_maintainers(data['maintainers'])
+            company_domain_from_json = data.get('company_domain')
+            if company_domain_from_json and company_domain_from_json.strip():
+                self.org_domain = company_domain_from_json.strip()
+                print(f"   🔍 Using company domain from analysis: {self.org_domain}")
+            else:
+                # If no company_domain in JSON, try to identify it from maintainers
+                if 'maintainers' in data:
+                    self.org_domain = self.identify_company_domain_from_maintainers(data['maintainers'])
+                    if self.org_domain:
+                        print(f"   🔍 Identified company domain from maintainers: {self.org_domain}")
+                    else:
+                        print(f"   ℹ️  No company domain identified")
                 
             print(f"📋 Loaded analysis for {data.get('organization_name', 'Unknown Organization')}")
             print(f"   👥 Maintainers: {len(data['maintainers'])}")
