@@ -11,6 +11,8 @@ import shutil
 import sys
 import requests
 import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
@@ -346,7 +348,7 @@ class GitleaksScanner:
     def prompt_maintainer_scope(self) -> bool:
         """Prompt user to choose between all maintainers or organization maintainers only"""
         if not self.org_domain:
-            print("✅ No organization domain detected - will scan all maintainers")
+            print("ℹ️  No organization domain detected - will scan all maintainers")
             return True  # Skip if no org domain detected
             
         print("\n👥 MAINTAINER SCOPE SELECTION")
@@ -443,18 +445,23 @@ class GitleaksScanner:
             print(f"❌ Error creating scan directory: {e}")
             raise
     
+    def analyze_repository_metadata_threaded(self, repo: str, username: str, repo_type: str) -> RepositoryInfo:
+        """Thread-safe version of analyze_repository_metadata"""
+        return self.analyze_repository_metadata(repo, username, repo_type)
+
     def gather_repository_info(self, maintainers: List[Dict]) -> List[RepositoryInfo]:
-        """Gather repository information from all maintainers"""
-        print(f"\n🔍 Analyzing repository metadata...")
+        """Gather repository information from all maintainers using threading"""
+        print(f"\n🔍 Analyzing repository metadata with threading...")
         
-        all_repos = []
+        # Prepare list of repositories to analyze
+        repo_tasks = []
+        filtered_maintainers = []
         
         for maintainer in maintainers:
             username = maintainer.get('username', 'unknown')
             
             # Filter out unwanted users
             if self.should_filter_user(username):
-                print(f"  🚫 Filtered user: {username}")
                 self.filtered_users += 1
                 continue
             
@@ -463,30 +470,53 @@ class GitleaksScanner:
                 maintainer_emails = maintainer.get('emails', [])
                 has_org_email = any(email.endswith(f'@{self.org_domain}') for email in maintainer_emails)
                 if not has_org_email:
-                    print(f"  🚫 Filtered user (not organization maintainer): {username}")
                     self.filtered_users += 1
                     continue
                 
+            filtered_maintainers.append(maintainer)
             personal_repos = maintainer.get('personal_repositories', [])
             org_repos = maintainer.get('organization_repositories', [])
             
-            print(f"  👤 {username}: {len(personal_repos)} personal + {len(org_repos)} org repos")
-            
-            # Process personal repositories
+            # Add personal repositories to task list
             for repo in personal_repos:
                 if repo and '/' in repo:
-                    repo_info = self.analyze_repository_metadata(repo, username, 'personal')
-                    all_repos.append(repo_info)
+                    repo_tasks.append((repo, username, 'personal'))
             
-            # Process organization repositories
+            # Add organization repositories to task list
             for repo in org_repos:
                 if repo and '/' in repo:
-                    repo_info = self.analyze_repository_metadata(repo, username, 'organization')
-                    all_repos.append(repo_info)
-            
-            # Add small delay to avoid rate limiting
-            time.sleep(0.1)
+                    repo_tasks.append((repo, username, 'organization'))
         
+        print(f"  📊 Processing {len(repo_tasks)} repositories from {len(filtered_maintainers)} maintainers...")
+        
+        all_repos = []
+        completed_count = 0
+        
+        # Use ThreadPoolExecutor for concurrent metadata fetching
+        with ThreadPoolExecutor(max_workers=5) as executor:  # Limit to 5 concurrent requests
+            # Submit all tasks
+            future_to_repo = {
+                executor.submit(self.analyze_repository_metadata_threaded, repo, username, repo_type): 
+                (repo, username, repo_type) for repo, username, repo_type in repo_tasks
+            }
+            
+            # Process completed tasks
+            for future in as_completed(future_to_repo):
+                repo, username, repo_type = future_to_repo[future]
+                completed_count += 1
+                
+                try:
+                    repo_info = future.result()
+                    all_repos.append(repo_info)
+                    
+                    # Progress update every 50 repos
+                    if completed_count % 50 == 0 or completed_count == len(repo_tasks):
+                        print(f"  📈 Progress: {completed_count}/{len(repo_tasks)} repositories analyzed")
+                        
+                except Exception as e:
+                    print(f"  ❌ Error analyzing {repo}: {str(e)[:50]}")
+        
+        print(f"  ✅ Completed analysis of {len(all_repos)} repositories")
         return all_repos
     
     def clone_repository(self, repo_url: str, clone_path: Path) -> bool:
@@ -660,8 +690,8 @@ class GitleaksScanner:
         except Exception:
             return 0, []
     
-    def scan_single_repository(self, repo_info: RepositoryInfo) -> Dict:
-        """Scan a single repository and show detailed results"""
+    def scan_single_repository(self, repo_info: RepositoryInfo, show_progress: bool = True) -> Dict:
+        """Scan a single repository - now thread-safe with optional progress display"""
         result = {
             'repo_info': repo_info,
             'success': False,
@@ -675,18 +705,9 @@ class GitleaksScanner:
             clone_path = self.scan_base_dir / repo_info.maintainer_username / repo_info.owner / f"{repo_info.name}.git"
             report_path = self.scan_base_dir / f"{repo_info.maintainer_username}__{repo_info.owner}__{repo_info.name}__report.json"
             
-            # Progress update
-            fork_indicator = " [FORK]" if repo_info.is_fork else ""
-            master_fork_indicator = " [MASTER FORK]" if repo_info.is_fork_of_master_org else ""
-            size_info = f" ({repo_info.size_kb/1024:.1f}MB)"
-            
-            print(f"  📦 {repo_info.full_name}{fork_indicator}{master_fork_indicator}{size_info}")
-            
             # Clone repository
             if not self.clone_repository(repo_info.clone_url, clone_path):
                 result['error'] = "Clone failed"
-                self.failed_repos += 1
-                print(f"    ❌ Clone failed")
                 return result
             
             # Get commit hash
@@ -696,8 +717,6 @@ class GitleaksScanner:
             # Run gitleaks scan
             if not self.run_gitleaks_scan(clone_path, report_path):
                 result['error'] = "Gitleaks scan failed"
-                self.failed_repos += 1
-                print(f"    ❌ Gitleaks scan failed")
                 return result
             
             # Analyze results
@@ -748,113 +767,110 @@ class GitleaksScanner:
             result['success'] = True
             result['secrets_found'] = len(filtered_secrets)
             result['secrets_data'] = filtered_secrets
+            result['original_secrets_count'] = secrets_count
+            result['date_filtered_count'] = date_filtered_count
             
-            # Update statistics
-            self.total_secrets_found += len(filtered_secrets)
-            self.scanned_repos += 1
-            
-            if len(filtered_secrets) > 0:
-                print(f"    🚨 {len(filtered_secrets)} unique secret(s) found!")
-                total_filtered = secrets_count - len(filtered_secrets)
-                if total_filtered > 0:
-                    filter_reasons = []
-                    if secrets_count - date_filtered_count - (secrets_count - len(filtered_secrets) - date_filtered_count) > 0:
-                        filter_reasons.append("duplicates/unwanted files")
-                    if date_filtered_count > 0:
-                        filter_reasons.append(f"{date_filtered_count} by date filter")
-                    print(f"    🚫 Filtered out {total_filtered}: {', '.join(filter_reasons)}")
-                
-                # Show detailed secrets immediately
-                for i, secret in enumerate(filtered_secrets, 1):
-                    rule_name = secret.get('RuleID', 'Unknown Rule')
-                    file_path = secret.get('File', 'Unknown File')
-                    line_number = secret.get('StartLine', 0)
-                    secret_value = secret.get('Secret', 'Unknown Secret')
-                    commit_date = secret.get('commit_date', 'unknown')
-                    secret_commit_hash = secret.get('secret_commit_hash', commit_hash)
-                    
-                    print(f"\n    🚨 SECRET #{i}:")
-                    print(f"       👤 Maintainer: {repo_info.maintainer_username}")
-                    print(f"       📁 Repository: {repo_info.full_name}")
-                    print(f"       🔑 Secret Value: {secret_value}")
-                    print(f"       📝 Rule: {rule_name}")
-                    print(f"       📄 File: {file_path}")
-                    print(f"       📍 Line: {line_number}")
-                    print(f"       📅 Commit Date: {commit_date}")
-                    print(f"       🔗 Commit Hash: {secret_commit_hash}")
-                    
-                    # Create GitHub link using the secret's specific commit hash
-                    github_link = self.create_github_link(repo_info.full_name, secret_commit_hash, file_path, line_number)
-                    print(f"       🌐 GitHub Link: {github_link}")
-                    
-                    # Show file content
-                    filename, context_lines = self.read_file_content(clone_path, file_path, line_number)
-                    if context_lines:
-                        print(f"       📖 File Content ({filename}):")
-                        for line in context_lines:
-                            print(f"           {line}")
-                    else:
-                        print(f"       📖 Could not read file content")
-                    print()
-                
-            else:
-                print(f"    ✅ No secrets found")
-                if secrets_count > 0:
-                    filter_reasons = []
-                    if secrets_count - date_filtered_count > 0:
-                        filter_reasons.append("unwanted files/duplicates")
-                    if date_filtered_count > 0:
-                        filter_reasons.append(f"{date_filtered_count} by date filter")
-                    print(f"    🚫 Filtered out {secrets_count}: {', '.join(filter_reasons)}")
-            
-            # Clean up cloned repo to save space (but keep it temporarily for file reading)
-            # We'll clean up later after all processing is done
+            # Clean up cloned repo to save space
+            try:
+                if clone_path.exists():
+                    shutil.rmtree(clone_path)
+            except Exception:
+                pass  # Ignore cleanup errors
             
             return result
             
         except Exception as e:
             result['error'] = str(e)
-            self.failed_repos += 1
-            print(f"    ❌ Error: {str(e)}")
             return result
     
-    def print_detailed_secrets(self, scan_results: List[Dict]):
-        """Print detailed information about found secrets"""
+    def print_scan_results(self, scan_results: List[Dict]):
+        """Print detailed scan results organized by repository"""
         if self.total_secrets_found == 0:
+            print(f"\n✅ No secrets found in any repositories!")
             return
         
-        print(f"\n🚨 DETAILED SECRET FINDINGS:")
+        print(f"\n🚨 DETAILED SCAN RESULTS:")
         print("="*80)
         
-        for result in scan_results:
+        # Sort results by repository name for consistent display
+        sorted_results = sorted(scan_results, key=lambda x: x['repo_info'].full_name)
+        
+        for result in sorted_results:
             if result['success'] and result['secrets_found'] > 0:
                 repo_info = result['repo_info']
                 secrets_data = result['secrets_data']
                 
-                fork_info = ""
-                if repo_info.is_fork_of_master_org:
-                    fork_info = f" [FORK OF {self.master_org}]"
-                elif repo_info.is_fork:
-                    fork_info = f" [FORK]"
+                # Repository header
+                fork_indicator = " [FORK]" if repo_info.is_fork else ""
+                master_fork_indicator = " [MASTER FORK]" if repo_info.is_fork_of_master_org else ""
+                size_info = f" ({repo_info.size_kb/1024:.1f}MB)"
                 
-                print(f"\n📁 {repo_info.full_name}{fork_info} ({repo_info.size_kb/1024:.1f}MB)")
+                print(f"\n📦 {repo_info.full_name}{fork_indicator}{master_fork_indicator}{size_info}")
                 print(f"   👤 Maintainer: {repo_info.maintainer_username}")
-                print(f"   🔍 Secrets found: {result['secrets_found']}")
+                print(f"   🚨 Secrets found: {result['secrets_found']}")
                 
+                # Show filtering info
+                original_count = result.get('original_secrets_count', 0)
+                date_filtered = result.get('date_filtered_count', 0)
+                if original_count > result['secrets_found']:
+                    total_filtered = original_count - result['secrets_found']
+                    filter_reasons = []
+                    if original_count - date_filtered - (original_count - result['secrets_found'] - date_filtered) > 0:
+                        filter_reasons.append("duplicates/unwanted files")
+                    if date_filtered > 0:
+                        filter_reasons.append(f"{date_filtered} by date filter")
+                    print(f"   🚫 Filtered out {total_filtered}: {', '.join(filter_reasons)}")
+                
+                # Display each secret
                 for i, secret in enumerate(secrets_data, 1):
                     rule_name = secret.get('RuleID', 'Unknown Rule')
                     file_path = secret.get('File', 'Unknown File')
-                    line_number = secret.get('StartLine', 'Unknown Line')
+                    line_number = secret.get('StartLine', 0)
+                    secret_value = secret.get('Secret', 'Unknown Secret')
+                    commit_date = secret.get('commit_date', 'unknown')
+                    secret_commit_hash = secret.get('secret_commit_hash', result['commit_hash'])
                     
-                    print(f"   [{i}] Rule: {rule_name}")
-                    print(f"       File: {file_path}")
-                    print(f"       Line: {line_number}")
+                    print(f"\n   🚨 SECRET #{i}:")
+                    print(f"      🔑 Secret Value: {secret_value}")
+                    print(f"      📝 Rule: {rule_name}")
+                    print(f"      📄 File: {file_path}")
+                    print(f"      📍 Line: {line_number}")
+                    print(f"      📅 Commit Date: {commit_date}")
+                    print(f"      🔗 Commit Hash: {secret_commit_hash}")
                     
-                    # Show secret excerpt if available (be careful not to expose actual secrets)
-                    if 'Secret' in secret:
-                        secret_preview = secret['Secret'][:20] + "..." if len(secret['Secret']) > 20 else secret['Secret']
-                        print(f"       Preview: {secret_preview}")
-                print()
+                    # Create GitHub link using the secret's specific commit hash
+                    github_link = self.create_github_link(repo_info.full_name, secret_commit_hash, file_path, line_number)
+                    print(f"      🌐 GitHub Link: {github_link}")
+                    
+                    # Show file content (re-clone if needed for file reading)
+                    clone_path = self.scan_base_dir / repo_info.maintainer_username / repo_info.owner / f"{repo_info.name}.git"
+                    if not clone_path.exists():
+                        # Re-clone briefly for file content reading
+                        if self.clone_repository(repo_info.clone_url, clone_path):
+                            filename, context_lines = self.read_file_content(clone_path, file_path, line_number)
+                            if context_lines:
+                                print(f"      📖 File Content ({filename}):")
+                                for line in context_lines:
+                                    print(f"          {line}")
+                            else:
+                                print(f"      📖 Could not read file content")
+                            # Clean up immediately
+                            try:
+                                shutil.rmtree(clone_path)
+                            except Exception:
+                                pass
+                        else:
+                            print(f"      📖 Could not re-clone for file content")
+                    else:
+                        filename, context_lines = self.read_file_content(clone_path, file_path, line_number)
+                        if context_lines:
+                            print(f"      📖 File Content ({filename}):")
+                            for line in context_lines:
+                                print(f"          {line}")
+                        else:
+                            print(f"      📖 Could not read file content")
+        
+        print("\n" + "="*80)
     
     def print_final_summary(self, eligible_repos: List[RepositoryInfo], scan_results: List[Dict]):
         """Print final scanning summary"""
@@ -1100,33 +1116,55 @@ class GitleaksScanner:
             print("   • GitHub API rate limit issues")
             return False
         
-        print(f"\n🎯 Starting sequential scanning of {len(eligible_repos)} repositories...")
+        print(f"\n🎯 Starting threaded scanning of {len(eligible_repos)} repositories...")
         print(f"   📏 Size limit: {self.max_repo_size_mb}MB")
+        print(f"   🧵 Using up to 3 concurrent scans")
         
-        # Scan repositories sequentially
+        # Scan repositories with threading
         scan_results = []
+        completed_count = 0
+        
         try:
-            for i, repo in enumerate(eligible_repos, 1):
-                print(f"\n[{i}/{len(eligible_repos)}] Scanning repository...")
-                try:
-                    result = self.scan_single_repository(repo)
-                    scan_results.append(result)
+            with ThreadPoolExecutor(max_workers=3) as executor:  # Limit concurrent scans
+                # Submit all scanning tasks
+                future_to_repo = {
+                    executor.submit(self.scan_single_repository, repo, False): repo 
+                    for repo in eligible_repos
+                }
+                
+                # Process completed scans
+                for future in as_completed(future_to_repo):
+                    repo = future_to_repo[future]
+                    completed_count += 1
                     
-                    # Clean up after each repo to save space
-                    clone_path = self.scan_base_dir / repo.maintainer_username / repo.owner / f"{repo.name}.git"
                     try:
-                        if clone_path.exists():
-                            shutil.rmtree(clone_path)
-                    except Exception:
-                        pass  # Ignore cleanup errors
+                        result = future.result()
+                        scan_results.append(result)
                         
-                except Exception as e:
-                    print(f"❌ Unexpected error scanning {repo.full_name}: {e}")
-                    self.failed_repos += 1
+                        # Update statistics
+                        if result['success']:
+                            self.total_secrets_found += result['secrets_found']
+                            self.scanned_repos += 1
+                        else:
+                            self.failed_repos += 1
+                        
+                        # Progress update every 25 repos
+                        if completed_count % 25 == 0 or completed_count == len(eligible_repos):
+                            secrets_so_far = sum(r['secrets_found'] for r in scan_results if r['success'])
+                            print(f"  📈 Progress: {completed_count}/{len(eligible_repos)} repos scanned, {secrets_so_far} secrets found so far")
+                            
+                    except Exception as e:
+                        print(f"  ❌ Unexpected error scanning {repo.full_name}: {e}")
+                        self.failed_repos += 1
                         
         except KeyboardInterrupt:
             print(f"\n🛑 Scanning interrupted by user")
             return False
+        
+        print(f"\n✅ Completed scanning all {len(eligible_repos)} repositories")
+        
+        # Print detailed results for repositories with secrets
+        self.print_scan_results(scan_results)
         
         # Print final summary
         self.print_final_summary(eligible_repos, scan_results)
