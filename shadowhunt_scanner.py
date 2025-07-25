@@ -48,6 +48,10 @@ class GitleaksScanner:
         # Date filtering
         self.filter_date = None  # Will be set by user input
         
+        # Organization email filtering
+        self.org_email_only = False  # Will be set by user input
+        self.org_domain = None  # Will be extracted from analysis data
+        
         # Statistics
         self.total_secrets_found = 0
         self.scanned_repos = 0
@@ -101,6 +105,16 @@ class GitleaksScanner:
             for pattern in test_patterns:
                 if pattern in part:
                     return True
+        
+        # Filter files and folders named 'example'
+        for part in path_parts:
+            if part == 'example' or part == 'examples':
+                return True
+        
+        # Filter files with 'example' in the name
+        filename = path_parts[-1] if path_parts else ''
+        if 'example' in filename:
+            return True
         
         return False
     
@@ -329,6 +343,30 @@ class GitleaksScanner:
             except ValueError:
                 print("❌ Invalid date format. Please use YYYY-MM-DD (e.g., 2024-01-01)")
 
+    def prompt_org_email_filter(self) -> bool:
+        """Prompt user for organization email filtering option"""
+        if not self.org_domain:
+            return True  # Skip if no org domain detected
+            
+        print("\n📧 ORGANIZATION EMAIL FILTERING")
+        print("="*60)
+        print(f"Organization domain detected: {self.org_domain}")
+        print("You can filter to scan only maintainers with organization email addresses.")
+        print("This helps focus on internal users and reduces scanning of external contributors.")
+        print()
+        
+        while True:
+            use_filter = input(f"Scan only users with @{self.org_domain} email addresses? (y/n): ").strip().lower()
+            if use_filter in ['y', 'yes']:
+                self.org_email_only = True
+                print(f"✅ Will scan only users with @{self.org_domain} email addresses")
+                return True
+            elif use_filter in ['n', 'no']:
+                print("✅ Will scan all maintainers regardless of email domain")
+                return True
+            else:
+                print("Please enter 'y' for yes or 'n' for no")
+
     def prompt_user_consent(self) -> bool:
         """Prompt user for consent to scan repositories"""
         print("\n" + "="*80)
@@ -368,10 +406,15 @@ class GitleaksScanner:
             
             # Extract master organization name for fork detection
             self.master_org = data.get('organization_name', 'Unknown')
+            
+            # Extract organization domain for email filtering
+            self.org_domain = data.get('company_domain', '')
                 
             print(f"📋 Loaded analysis for {data.get('organization_name', 'Unknown Organization')}")
             print(f"   👥 Maintainers: {len(data['maintainers'])}")
             print(f"   🏢 Master organization: {self.master_org}")
+            if self.org_domain:
+                print(f"   📧 Organization domain: {self.org_domain}")
             
             return data
         except FileNotFoundError:
@@ -407,6 +450,15 @@ class GitleaksScanner:
                 print(f"  🚫 Filtered user: {username}")
                 self.filtered_users += 1
                 continue
+            
+            # Filter by organization email if enabled
+            if self.org_email_only and self.org_domain:
+                maintainer_emails = maintainer.get('emails', [])
+                has_org_email = any(email.endswith(f'@{self.org_domain}') for email in maintainer_emails)
+                if not has_org_email:
+                    print(f"  🚫 Filtered user (no @{self.org_domain} email): {username}")
+                    self.filtered_users += 1
+                    continue
                 
             personal_repos = maintainer.get('personal_repositories', [])
             org_repos = maintainer.get('organization_repositories', [])
@@ -431,7 +483,7 @@ class GitleaksScanner:
         return all_repos
     
     def clone_repository(self, repo_url: str, clone_path: Path) -> bool:
-        """Clone a repository to the specified path"""
+        """Clone a repository as mirror to the specified path with .git extension"""
         try:
             # Remove existing directory if it exists
             if clone_path.exists():
@@ -440,9 +492,9 @@ class GitleaksScanner:
             # Create parent directories
             clone_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # Clone the repository
+            # Clone the repository as mirror (bare repository with .git extension)
             result = subprocess.run([
-                'git', 'clone', '--depth', '1', repo_url, str(clone_path)
+                'git', 'clone', '--mirror', repo_url, str(clone_path)
             ], capture_output=True, text=True, timeout=300)
             
             if result.returncode == 0:
@@ -612,7 +664,7 @@ class GitleaksScanner:
         }
         
         try:
-            clone_path = self.scan_base_dir / repo_info.maintainer_username / repo_info.owner / repo_info.name
+            clone_path = self.scan_base_dir / repo_info.maintainer_username / repo_info.owner / f"{repo_info.name}.git"
             report_path = self.scan_base_dir / f"{repo_info.maintainer_username}__{repo_info.owner}__{repo_info.name}__report.json"
             
             # Progress update
@@ -814,7 +866,10 @@ class GitleaksScanner:
         print(f"   🔍 Successfully scanned: {scanned_count}")
         print(f"   ❌ Failed to scan: {failed_count}")
         print(f"   ⏭️  Skipped (size limit): {skipped_count}")
-        print(f"   🚫 Filtered users (dependabot/gitstart): {self.filtered_users}")
+        filter_desc = "dependabot/gitstart"
+        if self.org_email_only:
+            filter_desc += f"/non-@{self.org_domain}"
+        print(f"   🚫 Filtered users ({filter_desc}): {self.filtered_users}")
         
         # Secret findings
         print(f"\n🔍 Secret Detection:")
@@ -874,8 +929,10 @@ class GitleaksScanner:
                     'organization_name': analysis_data.get('organization_name', 'Unknown'),
                     'total_maintainers': len(analysis_data.get('maintainers', [])),
                     'date_filter_applied': self.filter_date,
+                    'org_email_filter_applied': self.org_email_only,
+                    'org_domain': self.org_domain,
                     'max_repo_size_mb': self.max_repo_size_mb,
-                    'scanner_version': 'ShadowHunt Enhanced v2.0'
+                    'scanner_version': 'ShadowHunt Enhanced v2.1'
                 },
                 'statistics': {
                     'total_repos_analyzed': self.total_repos_analyzed,
@@ -949,6 +1006,10 @@ class GitleaksScanner:
         
         # Get date filtering preferences
         if not self.prompt_date_filter():
+            return False
+        
+        # Get organization email filtering preferences
+        if not self.prompt_org_email_filter():
             return False
         
         # Check if gitleaks is available
@@ -1044,7 +1105,7 @@ class GitleaksScanner:
                     scan_results.append(result)
                     
                     # Clean up after each repo to save space
-                    clone_path = self.scan_base_dir / repo.maintainer_username / repo.owner / repo.name
+                    clone_path = self.scan_base_dir / repo.maintainer_username / repo.owner / f"{repo.name}.git"
                     try:
                         if clone_path.exists():
                             shutil.rmtree(clone_path)

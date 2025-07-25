@@ -407,16 +407,16 @@ class GitHubContributorAnalyzer:
         company_domain = self.identify_company_domain(contributors)
         maintainers = self.identify_maintainers(contributors, company_domain)
         
-        # Get top 20 contributors by commit count for detailed analysis
-        top_contributors = sorted(contributors.items(), key=lambda x: x[1]['commits'], reverse=True)[:20]
+        # Get all contributors sorted by commit count for detailed analysis
+        all_contributors = sorted(contributors.items(), key=lambda x: x[1]['commits'], reverse=True)
         
-        # Get detailed repository info for top contributors
+        # Get detailed repository info for all contributors
         maintainers_with_repos = []
         
-        print(f"\n🔍 Fetching detailed repository data for top {len(top_contributors)} contributors...")
+        print(f"\n🔍 Fetching detailed repository data for all {len(all_contributors)} contributors...")
         
-        for i, (username, data) in enumerate(top_contributors, 1):
-            print(f"  [{i}/{len(top_contributors)}] {username}")
+        for i, (username, data) in enumerate(all_contributors, 1):
+            print(f"  [{i}/{len(all_contributors)}] {username}")
             
             try:
                 # Get user's detailed repository breakdown
