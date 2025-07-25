@@ -348,12 +348,12 @@ class GitHubContributorAnalyzer:
             return
             
         sorted_contributors = sorted(contributors.items(), key=lambda x: x[1]['commits'], reverse=True)
-        top_contributors = sorted_contributors[:10]
+        top_contributors_display = sorted_contributors[:10]  # Still limit display to top 10 for readability
         
         print(f"\n📁 USER REPOSITORIES:")
         print("="*60)
         
-        for i, (username, data) in enumerate(top_contributors, 1):
+        for i, (username, data) in enumerate(top_contributors_display, 1):
             print(f"\n👤 {i}. {username}")
             print(f"   📧 {', '.join(list(data['emails'])[:1])}")
             
@@ -382,7 +382,7 @@ class GitHubContributorAnalyzer:
             except Exception as e:
                 print(f"   ❌ Error: {str(e)[:50]}...")
             
-            if i < len(top_contributors):
+            if i < len(top_contributors_display):
                 time.sleep(0.3)
     
     def print_results(self, contributors: Dict[str, dict], target: str):
@@ -515,7 +515,7 @@ class GitHubContributorAnalyzer:
             print(f"   🏢 Organization: {target}")
             print(f"   🌐 Domain: {company_domain or 'Not identified'}")
             print(f"   👑 Maintainers: {len(maintainers)}")
-            print(f"   🔍 Top contributors analyzed: {len(top_contributors)}")
+            print(f"   🔍 All contributors analyzed: {len(all_contributors)}")
         except Exception as e:
             print(f"❌ Error saving: {e}")
             return None, None
