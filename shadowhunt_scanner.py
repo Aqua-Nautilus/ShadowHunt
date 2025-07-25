@@ -417,7 +417,11 @@ class GitleaksScanner:
             self.master_org = data.get('organization_name', 'Unknown')
             
             # Extract organization domain for email filtering
-            self.org_domain = data.get('company_domain', '')
+            self.org_domain = data.get('company_domain') or None
+            
+            # If no company_domain in JSON, try to identify it from maintainers
+            if not self.org_domain and 'maintainers' in data:
+                self.org_domain = self.identify_company_domain_from_maintainers(data['maintainers'])
                 
             print(f"📋 Loaded analysis for {data.get('organization_name', 'Unknown Organization')}")
             print(f"   👥 Maintainers: {len(data['maintainers'])}")
@@ -436,6 +440,36 @@ class GitleaksScanner:
             print(f"❌ Error reading {json_file}: {e}")
             return None
     
+    def identify_company_domain_from_maintainers(self, maintainers: List[Dict]) -> Optional[str]:
+        """Identify the most likely company domain from maintainers data"""
+        domain_users = {}
+        excluded_domains = {
+            'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 
+            'users.noreply.github.com', 'noreply.github.com',
+            'googlemail.com', 'icloud.com', 'protonmail.com'
+        }
+        
+        # Count users per domain
+        for maintainer in maintainers:
+            emails = maintainer.get('emails', [])
+            username = maintainer.get('username', 'unknown')
+            
+            for email in emails:
+                if '@' in email:
+                    domain = email.split('@')[1].lower()
+                    if domain not in excluded_domains:
+                        if domain not in domain_users:
+                            domain_users[domain] = set()
+                        domain_users[domain].add(username)
+        
+        # Find domain with most users (minimum 2)
+        company_domains = {
+            domain: len(users) for domain, users in domain_users.items()
+            if len(users) >= 2
+        }
+        
+        return max(company_domains.items(), key=lambda x: x[1])[0] if company_domains else None
+
     def setup_directories(self):
         """Create necessary directories for scanning"""
         try:

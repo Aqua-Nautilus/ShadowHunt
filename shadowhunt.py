@@ -213,14 +213,15 @@ class GitHubContributorAnalyzer:
         return all_contributors
     
     def get_email_domains(self, contributors: Dict[str, dict]) -> Dict[str, List[str]]:
-        """Get email domain mapping"""
-        domain_users = defaultdict(list)
+        """Get email domain mapping with unique usernames per domain"""
+        domain_users = defaultdict(set)
         for username, data in contributors.items():
             for email in data['emails']:
                 if '@' in email:
                     domain = email.split('@')[1].lower()
-                    domain_users[domain].append(username)
-        return domain_users
+                    domain_users[domain].add(username)
+        # Convert sets back to lists for consistent return type
+        return {domain: list(users) for domain, users in domain_users.items()}
     
     def identify_company_domain(self, contributors: Dict[str, dict]) -> Optional[str]:
         """Identify the most likely company domain"""
@@ -400,7 +401,6 @@ class GitHubContributorAnalyzer:
         self.print_summary(contributors, target, company_domain)
         self.print_contributors(contributors, company_domain)
         self.print_domains(contributors, company_domain)
-        self.print_user_repositories(contributors)
     
     def save_results(self, contributors: Dict[str, dict], target: str):
         """Save results to JSON"""
