@@ -53,6 +53,7 @@ class GitleaksScanner:
         # Organization email filtering
         self.org_maintainers_only = False  # Will be set by user input (scan only org maintainers)
         self.org_domain = None  # Will be extracted from analysis data
+        self.analysis_file = None  # Will store the analysis file path
         
         # Statistics
         self.total_secrets_found = 0
@@ -345,36 +346,103 @@ class GitleaksScanner:
             except ValueError:
                 print("❌ Invalid date format. Please use YYYY-MM-DD (e.g., 2024-01-01)")
 
+    def get_top_domains_from_maintainers(self, maintainers: List[Dict], min_users: int = 2) -> List[Tuple[str, int]]:
+        """Get top domains from maintainers data"""
+        domain_users = {}
+        excluded_domains = {
+            'gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 
+            'users.noreply.github.com', 'noreply.github.com',
+            'googlemail.com', 'icloud.com', 'protonmail.com'
+        }
+        
+        for maintainer in maintainers:
+            emails = maintainer.get('emails', [])
+            username = maintainer.get('username', 'unknown')
+            
+            for email in emails:
+                if '@' in email:
+                    domain = email.split('@')[1].lower()
+                    if domain not in excluded_domains:
+                        if domain not in domain_users:
+                            domain_users[domain] = set()
+                        domain_users[domain].add(username)
+        
+        # Return domains with at least min_users, sorted by user count
+        valid_domains = [(domain, len(users)) for domain, users in domain_users.items() if len(users) >= min_users]
+        return sorted(valid_domains, key=lambda x: x[1], reverse=True)
+
     def prompt_maintainer_scope(self) -> bool:
         """Prompt user to choose between all maintainers or organization maintainers only"""
-        if not self.org_domain:
-            print("ℹ️  No organization domain detected - will scan all maintainers")
-            return True  # Skip if no org domain detected
+        # If we have an org domain, use it
+        if self.org_domain:
+            print("\n👥 MAINTAINER SCOPE SELECTION")
+            print("="*60)
+            print(f"Organization domain detected: {self.org_domain}")
+            print()
+            print("Choose which maintainers to scan:")
+            print(f"  1. 🌍 All maintainers (includes external contributors)")
+            print(f"  2. 🏢 Organization maintainers only (users with @{self.org_domain} email)")
+            print()
             
-        print("\n👥 MAINTAINER SCOPE SELECTION")
+            while True:
+                choice = input("Enter your choice (1 for all, 2 for organization only): ").strip()
+                if choice == '1':
+                    self.org_maintainers_only = False
+                    print("✅ Will scan all maintainers (internal + external contributors)")
+                    return True
+                elif choice == '2':
+                    self.org_maintainers_only = True
+                    print(f"✅ Will scan only organization maintainers with @{self.org_domain} email")
+                    return True
+                else:
+                    print("Please enter '1' for all maintainers or '2' for organization maintainers only")
+        
+        # Fallback: let user choose from top domains
+        print("\n👥 DOMAIN SELECTION FOR FILTERING")
         print("="*60)
-        print(f"Organization domain detected: {self.org_domain}")
+        print("No primary organization domain detected. Choose a domain to filter by:")
         print()
-        print("Choose which maintainers to scan:")
-        print(f"  1. 🌍 All maintainers (includes external contributors)")
-        print(f"  2. 🏢 Organization maintainers only (users with @{self.org_domain} email)")
-        print()
-        print("Organization maintainers are users who have the company email address,")
-        print("which typically indicates they are internal employees or team members.")
+        
+        # Get maintainers data from the analysis
+        try:
+            with open(self.analysis_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            maintainers = data.get('maintainers', [])
+        except:
+            print("✅ Will scan all maintainers (no domain filtering)")
+            return True
+        
+        top_domains = self.get_top_domains_from_maintainers(maintainers)
+        
+        if not top_domains:
+            print("✅ No domains with multiple users found - will scan all maintainers")
+            return True
+        
+        print("Top domains found:")
+        print(f"  0. 🌍 All maintainers (no domain filtering)")
+        for i, (domain, count) in enumerate(top_domains[:10], 1):  # Show top 10
+            print(f"  {i}. 🏢 @{domain} ({count} users)")
         print()
         
         while True:
-            choice = input("Enter your choice (1 for all, 2 for organization only): ").strip()
-            if choice == '1':
-                self.org_maintainers_only = False
-                print("✅ Will scan all maintainers (internal + external contributors)")
-                return True
-            elif choice == '2':
-                self.org_maintainers_only = True
-                print(f"✅ Will scan only organization maintainers with @{self.org_domain} email")
-                return True
-            else:
-                print("Please enter '1' for all maintainers or '2' for organization maintainers only")
+            try:
+                choice = input(f"Enter your choice (0-{len(top_domains[:10])}): ").strip()
+                choice_num = int(choice)
+                
+                if choice_num == 0:
+                    self.org_maintainers_only = False
+                    print("✅ Will scan all maintainers (no domain filtering)")
+                    return True
+                elif 1 <= choice_num <= len(top_domains[:10]):
+                    selected_domain = top_domains[choice_num - 1][0]
+                    self.org_domain = selected_domain
+                    self.org_maintainers_only = True
+                    print(f"✅ Will scan only users with @{selected_domain} email addresses")
+                    return True
+                else:
+                    print(f"Please enter a number between 0 and {len(top_domains[:10])}")
+            except ValueError:
+                print("Please enter a valid number")
 
     def prompt_user_consent(self) -> bool:
         """Prompt user for consent to scan repositories"""
@@ -406,6 +474,7 @@ class GitleaksScanner:
     def parse_analysis_json(self, json_file: str) -> Optional[Dict]:
         """Parse the analysis JSON file"""
         try:
+            self.analysis_file = json_file  # Store for later use
             with open(json_file, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
@@ -906,6 +975,88 @@ class GitleaksScanner:
         
         print("\n" + "="*80)
     
+    def print_immediate_results(self, result: Dict, completed_count: int, total_repos: int):
+        """Print results immediately when secrets are found"""
+        repo_info = result['repo_info']
+        secrets_data = result['secrets_data']
+        
+        # Repository header
+        fork_indicator = " [FORK]" if repo_info.is_fork else ""
+        master_fork_indicator = " [MASTER FORK]" if repo_info.is_fork_of_master_org else ""
+        size_info = f" ({repo_info.size_kb/1024:.1f}MB)"
+        
+        print(f"\n[{completed_count}/{total_repos}] 🚨 SECRETS FOUND!")
+        print(f"📦 {repo_info.full_name}{fork_indicator}{master_fork_indicator}{size_info}")
+        print(f"👤 Maintainer: {repo_info.maintainer_username}")
+        print(f"🏢 Organization: {self.master_org}")
+        print(f"🚨 Secrets found: {result['secrets_found']}")
+        
+        # Show filtering info
+        original_count = result.get('original_secrets_count', 0)
+        date_filtered = result.get('date_filtered_count', 0)
+        if original_count > result['secrets_found']:
+            total_filtered = original_count - result['secrets_found']
+            filter_reasons = []
+            if original_count - date_filtered - (original_count - result['secrets_found'] - date_filtered) > 0:
+                filter_reasons.append("duplicates/unwanted files")
+            if date_filtered > 0:
+                filter_reasons.append(f"{date_filtered} by date filter")
+            print(f"🚫 Filtered out {total_filtered}: {', '.join(filter_reasons)}")
+        
+        # Display each secret immediately
+        for i, secret in enumerate(secrets_data, 1):
+            rule_name = secret.get('RuleID', 'Unknown Rule')
+            file_path = secret.get('File', 'Unknown File')
+            line_number = secret.get('StartLine', 0)
+            secret_value = secret.get('Secret', 'Unknown Secret')
+            commit_date = secret.get('commit_date', 'unknown')
+            secret_commit_hash = secret.get('secret_commit_hash', result['commit_hash'])
+            
+            print(f"\n🚨 SECRET #{i}:")
+            print(f"   👤 Maintainer: {repo_info.maintainer_username}")
+            print(f"   📁 Repository: {repo_info.full_name}")
+            print(f"   🏢 Organization: {self.master_org}")
+            print(f"   🔑 Secret Value: {secret_value}")
+            print(f"   📝 Rule: {rule_name}")
+            print(f"   📄 File: {file_path}")
+            print(f"   📍 Line: {line_number}")
+            print(f"   📅 Commit Date: {commit_date}")
+            print(f"   🔗 Commit Hash: {secret_commit_hash}")
+            
+            # Create GitHub link using the secret's specific commit hash
+            github_link = self.create_github_link(repo_info.full_name, secret_commit_hash, file_path, line_number)
+            print(f"   🌐 GitHub Link: {github_link}")
+            
+            # Show file content (re-clone if needed for file reading)
+            clone_path = self.scan_base_dir / repo_info.maintainer_username / repo_info.owner / f"{repo_info.name}.git"
+            if not clone_path.exists():
+                # Re-clone briefly for file content reading
+                if self.clone_repository(repo_info.clone_url, clone_path):
+                    filename, context_lines = self.read_file_content(clone_path, file_path, line_number)
+                    if context_lines:
+                        print(f"   📖 File Content ({filename}):")
+                        for line in context_lines:
+                            print(f"       {line}")
+                    else:
+                        print(f"   📖 Could not read file content")
+                    # Clean up immediately
+                    try:
+                        shutil.rmtree(clone_path)
+                    except Exception:
+                        pass
+                else:
+                    print(f"   📖 Could not re-clone for file content")
+            else:
+                filename, context_lines = self.read_file_content(clone_path, file_path, line_number)
+                if context_lines:
+                    print(f"   📖 File Content ({filename}):")
+                    for line in context_lines:
+                        print(f"       {line}")
+                else:
+                    print(f"   📖 Could not read file content")
+        
+        print("-" * 80)
+    
     def print_final_summary(self, eligible_repos: List[RepositoryInfo], scan_results: List[Dict]):
         """Print final scanning summary"""
         print("\n" + "="*80)
@@ -1000,32 +1151,20 @@ class GitleaksScanner:
                     'filtered_users': self.filtered_users,
                     'total_unique_secrets_found': self.total_secrets_found
                 },
-                'secrets_found': [],
-                'repositories_scanned': []
+                'secrets_found': []
             }
             
-            # Add detailed secret information
+            # Add only secret information (no repository scan list)
             for result in scan_results:
                 if result['success']:
                     repo_info = result['repo_info']
-                    repo_entry = {
-                        'repository': repo_info.full_name,
-                        'maintainer': repo_info.maintainer_username,
-                        'repo_type': repo_info.repo_type,
-                        'size_mb': round(repo_info.size_kb / 1024, 2),
-                        'is_fork': repo_info.is_fork,
-                        'is_fork_of_master_org': repo_info.is_fork_of_master_org,
-                        'fork_parent': repo_info.fork_parent,
-                        'secrets_count': result['secrets_found'],
-                        'scan_commit_hash': result['commit_hash']
-                    }
-                    detailed_results['repositories_scanned'].append(repo_entry)
                     
-                    # Add individual secrets
+                    # Add individual secrets only
                     for secret in result['secrets_data']:
                         secret_entry = {
                             'maintainer': repo_info.maintainer_username,
                             'repository': repo_info.full_name,
+                            'organization': self.master_org,
                             'repo_type': repo_info.repo_type,
                             'is_fork': repo_info.is_fork,
                             'is_fork_of_master_org': repo_info.is_fork_of_master_org,
@@ -1166,7 +1305,7 @@ class GitleaksScanner:
                     for repo in eligible_repos
                 }
                 
-                # Process completed scans
+                # Process completed scans and show results immediately
                 for future in as_completed(future_to_repo):
                     repo = future_to_repo[future]
                     completed_count += 1
@@ -1174,6 +1313,10 @@ class GitleaksScanner:
                     try:
                         result = future.result()
                         scan_results.append(result)
+                        
+                        # Show results immediately when found
+                        if result['success'] and result['secrets_found'] > 0:
+                            self.print_immediate_results(result, completed_count, len(eligible_repos))
                         
                         # Update statistics
                         if result['success']:
@@ -1196,9 +1339,6 @@ class GitleaksScanner:
             return False
         
         print(f"\n✅ Completed scanning all {len(eligible_repos)} repositories")
-        
-        # Print detailed results for repositories with secrets
-        self.print_scan_results(scan_results)
         
         # Print final summary
         self.print_final_summary(eligible_repos, scan_results)
