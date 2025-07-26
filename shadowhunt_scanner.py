@@ -44,8 +44,9 @@ class GitleaksScanner:
         self.master_org = None  # Will be set from analysis data
         self.github_token = github_token
         
-        # Global set for secret deduplication
+        # Global set for secret deduplication with thread lock
         self.found_secrets = set()
+        self.secrets_lock = threading.Lock()
         
         # Date filtering
         self.filter_date = None  # Will be set by user input
@@ -121,10 +122,12 @@ class GitleaksScanner:
         
         return False
     
-    def create_secret_hash(self, secret_value: str, file_path: str, rule_id: str) -> str:
-        """Create a hash for secret deduplication"""
+    def create_secret_hash(self, secret_value: str, rule_id: str) -> str:
+        """Create a hash for secret deduplication based only on secret value and rule"""
         import hashlib
-        combined = f"{secret_value}_{file_path}_{rule_id}"
+        # Only use secret_value and rule_id for deduplication, ignore file_path
+        # This will catch the same secret appearing in multiple files
+        combined = f"{secret_value}_{rule_id}"
         return hashlib.md5(combined.encode()).hexdigest()
         
     def check_gitleaks_available(self) -> bool:
@@ -886,10 +889,14 @@ class GitleaksScanner:
                 if self.should_filter_file(file_path):
                     continue
                 
-                # Check for duplicate secrets
-                secret_hash = self.create_secret_hash(secret_value, file_path, rule_id)
-                if secret_hash in self.found_secrets:
-                    continue
+                # Check for duplicate secrets (thread-safe)
+                secret_hash = self.create_secret_hash(secret_value, rule_id)
+                
+                with self.secrets_lock:
+                    if secret_hash in self.found_secrets:
+                        continue  # Skip duplicate secret
+                    # Add to found secrets set immediately to prevent other threads from processing it
+                    self.found_secrets.add(secret_hash)
                 
                 # Get commit date for this secret
                 commit_date, secret_commit_hash = self.get_commit_date_for_line(clone_path, file_path, line_number)
@@ -905,13 +912,15 @@ class GitleaksScanner:
                         
                         if secret_datetime < filter_datetime:
                             date_filtered_count += 1
+                            # Remove from found_secrets since we're filtering it out
+                            with self.secrets_lock:
+                                self.found_secrets.discard(secret_hash)
                             continue
                     except ValueError:
                         # If date parsing fails, include the secret
                         pass
                 
-                # Add to found secrets set and filtered list
-                self.found_secrets.add(secret_hash)
+                # Add to filtered list
                 filtered_secrets.append(secret)
             
             result['success'] = True
